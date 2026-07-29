@@ -91,4 +91,4 @@ The results are in, and they are genuinely fascinating! Here is the exact breakd
   It's essentially the inverse of TFLOPs (Teraflops). Computing math at 0.083 ps/FLOP is mathematically
   identical to saying your chip is outputting 12 Trillion Operations Per Second (12 TFLOPs)!
 
-  In 0.083 picoseconds, light travels 0.02488 mm in a vacuum and 0.01244 to 0.01493 mm as an electrical impulse inside a silicon chip.Distance Estimates in MillimetersIn a Vacuum: 0.02488 mmInside a Chip: 0.01244 to 0.01493 mm
+  In 0.083 picoseconds, light travels 0.02488 mm in a vacuum and 0.01244 to 0.01493 mm as an electrical impulse inside a silicon chip, the Velocity of Propagation (VoP).Distance Estimates in MillimetersIn a Vacuum: 0.02488 mmInside a Chip: 0.01244 to 0.01493 mm
