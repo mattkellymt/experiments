@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import mlx.core as mx
 
-print("=== Starting Safe Apple Silicon Matrix Multiplication Profiler (-1 to +1 Full Dynamic Range) ===", flush=True)
+print("=== Starting High-Sample-Size Apple Silicon MatMul Profiler (Batch=64, Iters=8) ===", flush=True)
 print(f"PyTorch Version: {torch.__version__}", flush=True)
 print(f"MPS Available: {torch.backends.mps.is_available()}", flush=True)
 print(f"MLX Default Device: {mx.default_device()}", flush=True)
@@ -22,11 +22,6 @@ os.makedirs(EXP_DIR, exist_ok=True)
 os.makedirs(ART_DIR, exist_ok=True)
 
 def min_max_norm_minus_one_to_one(arr):
-    """
-    Min-Max normalization mapping [min(arr), max(arr)] strictly to [-1.0, +1.0].
-    -1.0 is guaranteed to be the fastest runtime (Deep Blue).
-    +1.0 is guaranteed to be the slowest runtime (Deep Red).
-    """
     min_val = np.min(arr)
     max_val = np.max(arr)
     if max_val == min_val:
@@ -76,7 +71,7 @@ class MatMulBlock(nn.Module):
     def forward(self, a, b):
         return torch.bmm(a, b)
 
-def benchmark_pytorch_mps(batch_size=16, offset=512, grid_size=32, dtype="fp32", use_compile=False):
+def benchmark_pytorch_mps(batch_size=64, offset=512, grid_size=32, dtype="fp32", use_compile=False, warmup=3, iters=8):
     device = torch.device("mps")
     runtimes = np.zeros((grid_size, grid_size), dtype=np.float64)
     torch_dtype = torch.float32 if dtype == "fp32" else torch.float16
@@ -86,7 +81,7 @@ def benchmark_pytorch_mps(batch_size=16, offset=512, grid_size=32, dtype="fp32",
     
     dummy_a = torch.randn(batch_size, offset, offset, device=device, dtype=torch_dtype)
     dummy_b = torch.randn(batch_size, offset, offset, device=device, dtype=torch_dtype)
-    for _ in range(3):
+    for _ in range(warmup):
         _ = mod(dummy_a, dummy_b)
         torch.mps.synchronize()
     del dummy_a, dummy_b
@@ -101,17 +96,17 @@ def benchmark_pytorch_mps(batch_size=16, offset=512, grid_size=32, dtype="fp32",
             a = torch.randn(batch_size, m, k, device=device, dtype=torch_dtype)
             b = torch.randn(batch_size, k, n, device=device, dtype=torch_dtype)
             
-            for _ in range(2):
+            for _ in range(warmup):
                 _ = mod(a, b)
                 torch.mps.synchronize()
                 
             t0 = time.perf_counter_ns()
-            for _ in range(4):
+            for _ in range(iters):
                 _ = mod(a, b)
                 torch.mps.synchronize()
             t1 = time.perf_counter_ns()
             
-            runtimes[i, j] = ((t1 - t0) / 4e6)
+            runtimes[i, j] = ((t1 - t0) / (iters * 1e6))
             
             del a, b
             time.sleep(0.002)
@@ -121,7 +116,7 @@ def benchmark_pytorch_mps(batch_size=16, offset=512, grid_size=32, dtype="fp32",
         
     return runtimes
 
-def benchmark_mlx_gpu(batch_size=16, offset=512, grid_size=32, dtype="fp32"):
+def benchmark_mlx_gpu(batch_size=64, offset=512, grid_size=32, dtype="fp32", warmup=3, iters=8):
     runtimes = np.zeros((grid_size, grid_size), dtype=np.float64)
     mx_dtype = mx.float32 if dtype == "fp32" else mx.float16
     
@@ -133,18 +128,20 @@ def benchmark_mlx_gpu(batch_size=16, offset=512, grid_size=32, dtype="fp32"):
             
             a = mx.random.normal((batch_size, m, k), dtype=mx_dtype)
             b = mx.random.normal((batch_size, k, n), dtype=mx_dtype)
-            c = mx.matmul(a, b)
-            mx.eval(c)
-            mx.synchronize()
+            
+            for _ in range(warmup):
+                c = mx.matmul(a, b)
+                mx.eval(c)
+                mx.synchronize()
             
             t0 = time.perf_counter_ns()
-            for _ in range(4):
+            for _ in range(iters):
                 c = mx.matmul(a, b)
                 mx.eval(c)
                 mx.synchronize()
             t1 = time.perf_counter_ns()
             
-            runtimes[i, j] = ((t1 - t0) / 4e6)
+            runtimes[i, j] = ((t1 - t0) / (iters * 1e6))
             
             del a, b, c
             time.sleep(0.002)
@@ -154,7 +151,7 @@ def benchmark_mlx_gpu(batch_size=16, offset=512, grid_size=32, dtype="fp32"):
         
     return runtimes
 
-def benchmark_pytorch_cpu(batch_size=16, offset=512, grid_size=32, dtype="fp32"):
+def benchmark_pytorch_cpu(batch_size=64, offset=512, grid_size=32, dtype="fp32", warmup=2, iters=4):
     device = torch.device("cpu")
     runtimes = np.zeros((grid_size, grid_size), dtype=np.float64)
     torch_dtype = torch.float32 if dtype == "fp32" else torch.float16
@@ -168,43 +165,45 @@ def benchmark_pytorch_cpu(batch_size=16, offset=512, grid_size=32, dtype="fp32")
             a = torch.randn(batch_size, m, k, device=device, dtype=torch_dtype)
             b = torch.randn(batch_size, k, n, device=device, dtype=torch_dtype)
             
+            for _ in range(warmup):
+                _ = torch.bmm(a, b)
+                
             t0 = time.perf_counter_ns()
-            for _ in range(2):
+            for _ in range(iters):
                 _ = torch.bmm(a, b)
             t1 = time.perf_counter_ns()
             
-            runtimes[i, j] = ((t1 - t0) / 2e6)
+            runtimes[i, j] = ((t1 - t0) / (iters * 1e6))
             del a, b
             time.sleep(0.001)
             
     return runtimes
 
 def run_safe_benchmarks():
-    batch_size = 16
+    batch_size = 64
     offset = 512
     grid_size = 32
     
-    print("\n--- 1. PyTorch MPS FP32 (Standard MPS) ---", flush=True)
+    print("\n--- 1. PyTorch MPS FP32 (High Sample Size: Batch=64, Iters=8) ---", flush=True)
     r_mps_fp32 = benchmark_pytorch_mps(batch_size, offset, grid_size, dtype="fp32", use_compile=False)
     safe_norm_and_plot(r_mps_fp32, f"PyTorch MPS FP32 Latency (Batch={batch_size}, Base={offset})", "heat.png")
 
-    print("\n--- 2. PyTorch MPS FP32 (torch.compile) ---", flush=True)
+    print("\n--- 2. PyTorch MPS FP32 (torch.compile, Batch=64) ---", flush=True)
     r_mps_compiled = benchmark_pytorch_mps(batch_size, offset, grid_size, dtype="fp32", use_compile=True)
     safe_norm_and_plot(r_mps_compiled, f"PyTorch MPS FP32 (torch.compile) Latency (Batch={batch_size}, Base={offset})", "heat_mps_compiled.png")
 
-    print("\n--- 3. PyTorch MPS FP16 (Standard MPS) ---", flush=True)
+    print("\n--- 3. PyTorch MPS FP16 (Batch=64) ---", flush=True)
     r_mps_fp16 = benchmark_pytorch_mps(batch_size, offset, grid_size, dtype="fp16", use_compile=False)
     safe_norm_and_plot(r_mps_fp16, f"PyTorch MPS FP16 Latency (Batch={batch_size}, Base={offset})", "heat_mps_fp16.png")
 
-    print("\n--- 4. Apple MLX GPU FP32 ---", flush=True)
+    print("\n--- 4. Apple MLX GPU FP32 (Batch=64) ---", flush=True)
     r_mlx_fp32 = benchmark_mlx_gpu(batch_size, offset, grid_size, dtype="fp32")
     safe_norm_and_plot(r_mlx_fp32, f"Apple MLX FP32 Latency (Batch={batch_size}, Base={offset})", "heat_mlx_fp32.png")
 
-    print("\n--- 5. PyTorch CPU FP32 ---", flush=True)
+    print("\n--- 5. PyTorch CPU FP32 (Batch=64) ---", flush=True)
     r_cpu_fp32 = benchmark_pytorch_cpu(batch_size, offset, grid_size, dtype="fp32")
     safe_norm_and_plot(r_cpu_fp32, f"PyTorch CPU (Accelerate) FP32 Latency (Batch={batch_size}, Base={offset})", "heat_cpu_fp32.png")
 
-    # Multi-panel summary plot with strict [-1, +1] min-max normalization
     fig, axes = plt.subplots(2, 2, figsize=(15, 13), dpi=300)
     plots = [
         (axes[0,0], r_mps_fp32, 'PyTorch MPS FP32 (Standard)'),
@@ -232,13 +231,12 @@ def run_safe_benchmarks():
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
     fig.colorbar(im, cax=cbar_ax, label='Normalized Dynamic Range (-1.0: Deep Blue, +1.0: Deep Red)')
-    fig.suptitle(f"Apple M4 Pro Matrix Multiplication Profiling: Full [-1, +1] Dynamic Range Normalization\nBatch Size = {batch_size}, Base Dimension = {offset}", fontsize=13, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0.04, 0.90, 0.96])
+    fig.suptitle(f"Apple M4 Pro Matrix Multiplication Profiling: High Sample Size (Batch={batch_size})\nBase Dimension = {offset}, 8 Iterations Per Shape Point", fontsize=13, fontweight='bold', y=0.98)
     
     p_art_multi = os.path.join(ART_DIR, 'heat_all_backends.png')
     p_exp_multi = os.path.join(EXP_DIR, 'heat_all_backends.png')
-    plt.savefig(p_art_multi)
-    plt.savefig(p_exp_multi)
+    plt.savefig(p_art_multi, bbox_inches='tight')
+    plt.savefig(p_exp_multi, bbox_inches='tight')
     plt.close()
 
     data = {
@@ -253,7 +251,7 @@ def run_safe_benchmarks():
     with open(os.path.join(EXP_DIR, 'benchmark_data.json'), 'w') as f:
         json.dump(data, f)
 
-    print("=== ALL HEATMAPS WITH FULL [-1.0, +1.0] DYNAMIC RANGE RE-GENERATED SUCCESSFULLY! ===", flush=True)
+    print("=== HIGH-SAMPLE-SIZE BENCHMARKING COMPLETED SUCCESSFULLY! ===", flush=True)
 
 if __name__ == "__main__":
     run_safe_benchmarks()
