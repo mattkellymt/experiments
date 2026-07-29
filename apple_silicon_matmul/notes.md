@@ -92,3 +92,7 @@ The results are in, and they are genuinely fascinating! Here is the exact breakd
   identical to saying your chip is outputting 12 Trillion Operations Per Second (12 TFLOPs)!
 
   In 0.083 picoseconds, light travels 0.02488 mm in a vacuum and 0.01244 to 0.01493 mm as an electrical impulse inside a silicon chip, the Velocity of Propagation (VoP).Distance Estimates in MillimetersIn a Vacuum: 0.02488 mmInside a Chip: 0.01244 to 0.01493 mm
+
+  ## the credit assignment problem
+
+  What I was describing is the Credit Assignment Problem and Vanishing Gradients in deep networks. When you train a model with 50+ layers, the mathematical signals (gradients) get diluted the deeper you go, making it incredibly hard for the early layers to learn cause-and-effect from the final outcome. We need that depth to capture highly complex, sophisticated data patterns, but the trade-off is that it introduces messy training dynamics. Because there isn't a perfect mathematical theory for this yet, doing this work successfully requires hands-on, empirical observation of the model during training. 
