@@ -9,10 +9,17 @@ This document outlines a rigorous, single-threaded profiling methodology to eval
 3. **Alignment & Coalescing Profiling:** Sweep the inner dimension ($K$) of matrix multiplication ($M \times K$ and $K \times N$) from unaligned shapes (e.g., odds, non-powers-of-two) to perfectly aligned shapes (multiples of 32/64) to visualize cache alignment and SIMD register effects.
 4. **Global Normalization:** Present the final results in a globally normalized color space ($[-1, +1]$ scaling over the entire dataset) to visually contrast cross-engine and cross-precision performance fairly on a single chart.
 
-## 3. Hardware & Software Constraints
+## 3. Hardware Profiling & Architectural Mapping
 *   **Target Hardware:** Apple M4 Pro (ARM64), Unified Memory Architecture.
-*   **Concurrency Prohibition:** **Crucial Constraint.** All operations MUST be executed purely sequentially. Parallel processing (e.g., Python `multiprocessing`, background terminal jobs) is strictly prohibited. Parallelism is only permitted internally where implicitly managed by the PyTorch/MLX compilation and execution engines.
-*   **Compilation:** All PyTorch code should leverage `torch.compile()` where applicable to ensure optimal dispatch and kernel generation, representing real-world production performance.
+    *   **GPU Cores:** 16 Cores (as profiled via `system_profiler`)
+    *   **Memory:** 24 GB Unified Memory
+*   **CUDA Mapping for M4 Pro:**
+    *   **SIMD Group** = **Warp** (Size: 32 threads)
+    *   **Threadgroup** = **Thread Block** (synchronization unit with shared memory)
+    *   **Execution Unit / ALU** = **CUDA Core**
+    *   **Core** = **Streaming Multiprocessor (SM)**
+*   **Concurrency Prohibition:** **Crucial Constraint.** All operations MUST be executed purely sequentially. Parallel processing is strictly prohibited to prevent thermal throttling and memory bandwidth contention.
+*   **Compilation:** All PyTorch code utilizes native MPS execution. MLX relies on `mx.compile()` to JIT compile optimized kernels.
 
 ## 4. Test Matrix
 The test suite consists of 9 discrete experiments (3 Engines $\times$ 3 Precisions):
@@ -25,12 +32,17 @@ The test suite consists of 9 discrete experiments (3 Engines $\times$ 3 Precisio
 
 *Note: The script will dynamically probe capability and safely fallback or mark as "Unsupported" if a specific precision (e.g., MLX BF16) is not natively supported by the framework/hardware combination, displaying an empty or grayed-out subplot.*
 
-## 5. Matrix Dimensions and Sweeping Strategy
-To accurately capture memory coalescing effects:
-*   Fixed outer dimensions: $M = 2048$, $N = 2048$.
-*   Variable inner dimension: $K \in \{2000, 2001, 2002, ..., 2100\}$.
-*   This specific $K$ range (100 discrete steps) crosses multiple standard alignment boundaries (2048 is $2^{11}$, multiples of 32, etc.) while avoiding excessive runtime.
-*   Batch size: Each timing measurement will consist of $B=32$ iterations of the matrix multiplication, with the mean latency reported per iteration to smooth out scheduling noise.
+## 5. Statistical Side-Experiment & Matrix Dimensions
+To empirically determine the necessary sample size, a statistical side-experiment was conducted:
+*   **Methodology:** Matrix multiplication ($2048 \times 2048$) was run for sample sizes $N \in \{5, 10, 20, 50, 100, 200\}$.
+*   **Finding:** The Coefficient of Variation (CV) drops well below 1.0% around 20 iterations (e.g., 0.59% for MPS, 0.55% for MLX). Running more iterations (e.g., 100+) slightly increased the standard deviation due to thermal variance and background OS noise.
+*   **Conclusion:** The optimal batch size is $B=20$ iterations per matrix size.
+
+### Architecturally Informed Sweeping Strategy
+To accurately capture memory coalescing effects around the SIMD group boundary (32 threads):
+*   Fixed inner dimension: $K = 2048$ (A common size for LLM layers).
+*   Variable outer dimensions: $M$ and $N$ swept from $2048$ to $2048 + 32$ (a full SIMD group, length 33).
+*   This sweep range crosses the exact 32-thread SIMD alignment boundary, visualizing unaligned cache penalties.
 
 ## 6. Execution Methodology
 To guarantee clean measurements:
