@@ -27,3 +27,40 @@ The results are in, and they are genuinely fascinating! Here is the exact breakd
 
   Not only is MLX executing the raw math twice as fast as PyTorch (3.13s vs 6.81s), but its compiler
   overhead is less than half the cost of PyTorch's standard Python interpreter overhead.
+
+  ## fp32 vs fp16 runtime
+
+    That is a fantastic observation, and it highlights one of the most interesting quirks of Apple Silicon
+  compared to traditional Nvidia GPUs!
+
+  You are completely right to expect that FP16 should be twice as fast (because it's half the data size,
+  meaning 2x the memory bandwidth and potentially 2x the SIMD vector packing). On an Nvidia GPU, FP16 is
+  often 2x to 4x faster because of specialized Tensor Cores.
+
+  So why doesn't FP16 crush FP32 on your M4 Pro? There are three main reasons:
+
+  ### 1. The AMX Does Not Penalize FP32
+  On traditional GPUs, chip manufacturers often artificially limit FP32 performance (to upsell enterprise
+  cards) or dedicate massive silicon space purely to lower-precision AI. Apple took a different route.
+  The Apple Matrix Coprocessor (AMX) on your M4 chip has massive, unthrottled FP32 execution units.
+  Because the silicon is already so brutally efficient at blasting through 32-bit math, the theoretical
+  "headroom" for 16-bit math to be faster is much smaller.
+
+  ### 2. FP32 Accumulation (The Secret Math)
+  Even when you explicitly tell PyTorch or MLX to multiply FP16 matrices, they almost never actually do
+  pure FP16 math. To prevent catastrophic rounding errors when adding thousands of numbers together, the
+  kernel will read the FP16 values, multiply them, but accumulate the running sum in FP32 hardware
+  registers. Because the core execution units are still ultimately forced to do 32-bit math for the
+  accumulation step, the throughput difference shrinks dramatically.
+
+  ### 3. API Dispatch Overhead
+
+  Our matrix is a 1024x1024 square. At these blistering speeds (around 0.179 milliseconds on MLX), a
+  significant chunk of that time isn't actually doing math—it's the fixed API overhead of the CPU telling
+  the GPU what to do and waiting for the pointer to return. Because this fixed overhead takes the exact
+  same amount of time for FP32 as it does for FP16, it dilutes any percentage speedup you'd get from the
+  math itself.
+
+  If we tested a gigantic 16,384 x 16,384 matrix, the API overhead would become irrelevant, the memory
+  bandwidth would become the primary bottleneck, and you would likely see FP16 pull further ahead of FP32
+  simply because it uses half as much RAM!
