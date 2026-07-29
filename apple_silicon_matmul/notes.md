@@ -64,3 +64,29 @@ The results are in, and they are genuinely fascinating! Here is the exact breakd
   If we tested a gigantic 16,384 x 16,384 matrix, the API overhead would become irrelevant, the memory
   bandwidth would become the primary bottleneck, and you would likely see FP16 pull further ahead of FP32
   simply because it uses half as much RAM!
+
+  ## flops
+
+    "ps" stands for picoseconds.
+
+  To give you an idea of how small that is:
+
+  • 1 second = 1,000 milliseconds (ms)
+  • 1 millisecond = 1,000 microseconds (μs)
+  • 1 microsecond = 1,000 nanoseconds (ns)
+  • 1 nanosecond = 1,000 picoseconds (ps)
+  So, 1 picosecond is one-trillionth of a second (10⁻¹² seconds)!
+  ### What does "ps/FLOP" mean?
+
+  FLOP stands for Floating-Point Operation (a single piece of math, like multiplying two decimals
+  together).
+
+  When our chart says the MLX benchmark ran at a minimum of ~0.083 ps/FLOP, it means that, on average, it
+  took your M4 Pro chip 0.083 trillionths of a second to complete a single math operation.
+  Obviously, a single silicon core can't physically do math that fast (the speed of light alone makes
+  that tough!). But because your GPU has thousands of tiny cores all doing math simultaneously in
+  parallel, the average time it takes to spit out one finished piece of math averages down to fractions
+  of a picosecond.
+
+  It's essentially the inverse of TFLOPs (Teraflops). Computing math at 0.083 ps/FLOP is mathematically
+  identical to saying your chip is outputting 12 Trillion Operations Per Second (12 TFLOPs)!
