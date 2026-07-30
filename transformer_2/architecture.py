@@ -114,11 +114,11 @@ class Attention(nn.Module):
         self.o_proj = create_param(self.q_dim, vocab_dim)
 
     def rope(self, x):
-        s = x.shape[-2]
-        if s > self.rope_cos.shape[0]:
+        seq_len = x.shape[-2]
+        if seq_len > self.rope_cos.shape[0]:
             raise ValueError("input sequence length exceeds configured seq_len")
-        cos = self.rope_cos[:s]
-        sin = self.rope_sin[:s]
+        cos = self.rope_cos[:seq_len]
+        sin = self.rope_sin[:seq_len]
         x_even, x_odd = x[..., 0::2], x[..., 1::2]
         out = torch.empty_like(x)
         out[..., 0::2] = x_even * cos - x_odd * sin
@@ -135,16 +135,16 @@ class Attention(nn.Module):
         return out.reshape(batch_size, self.n_heads, seq_len, self.head_dim)
 
     def forward(self, x):
-        b, s, d = x.shape
-        q = torch.matmul(x, self.q_proj.weight).reshape(b, s, self.n_heads, self.head_dim).transpose(1, 2)
-        k = torch.matmul(x, self.k_proj.weight).reshape(b, s, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        v = torch.matmul(x, self.v_proj.weight).reshape(b, s, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        batch_size, seq_len, vocab_dim = x.shape
+        q = torch.matmul(x, self.q_proj.weight).reshape(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        k = torch.matmul(x, self.k_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = torch.matmul(x, self.v_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         q = self.rope(q)
         k = self.rope(k)
 
         out = self.gqa(q, k, v)
-        out = out.transpose(1, 2).reshape(b, s, self.q_dim)
+        out = out.transpose(1, 2).reshape(batch_size, seq_len, self.q_dim)
         return torch.matmul(out, self.o_proj.weight)
 
 
