@@ -230,10 +230,6 @@ class Muon(torch.optim.Optimizer):
 
 class Adam(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
-        params = list(params)
-        for p in params:
-            if p.ndim != 1:
-                raise ValueError("Adam only supports 1D parameters")
         super().__init__(params, dict(
             lr=lr,
             beta1=betas[0],
@@ -315,7 +311,7 @@ def main():
 
     model = Model(**config).to(device=device, dtype=dtype)
     muon_params = [p for p in model.parameters() if p.ndim == 2]
-    adam_params = [p for p in model.parameters() if p.ndim == 1]
+    adam_params = [p for p in model.parameters() if p.ndim != 2]
 
     muon = Muon(muon_params, lr=lr, weight_decay=weight_decay, momentum=momentum)
     adam = Adam(adam_params, lr=lr, weight_decay=weight_decay)
