@@ -16,24 +16,24 @@ class Muon(torch.optim.Optimizer):
             ns_steps=ns_steps,
         ))
 
-    def newton_schulz_step(self, upd, a, b, c):
-        g = upd @ upd.T
+    def newton_schulz_step(self, update, a, b, c):
+        g = update @ update.T
         g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
-        upd_next = torch.addmm(upd, g_upd, upd, beta=a, alpha=1.0)
-        return upd_next
+        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
+        return update_next
 
     def newton_schulz(self, grad, eps, steps):
         a, b, c = 3.4445, -4.7750, 2.0315
-        upd = grad.bfloat16()
+        update = grad.bfloat16()
         is_transposed = grad.size(0) > grad.size(1)
         if is_transposed:
-            upd = upd.T
-        upd.div_(upd.norm().clamp(min=eps))
+            update = update.T
+        update.div_(update.norm().clamp(min=eps))
         for step_idx in range(steps):
-            upd = self.newton_schulz_step(upd, a, b, c)
+            update = self.newton_schulz_step(update, a, b, c)
         if is_transposed:
-            upd = upd.T
-        return upd
+            update = update.T
+        return update
 
     def step_param(self, p, group):
         if p.ndim != 2:
@@ -52,11 +52,11 @@ class Muon(torch.optim.Optimizer):
             state['buf'] = torch.zeros_like(grad)
         buf = state['buf']
         buf.lerp_(grad, 1 - mom)
-        upd = grad.lerp(buf, mom) if nest else buf
-        upd = self.newton_schulz(upd, eps, steps)
+        update = grad.lerp(buf, mom) if nest else buf
+        update = self.newton_schulz(update, eps, steps)
         adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
         p.mul_(1 - lr * wd)
-        p.add_(upd, alpha=-adj_lr)
+        p.add_(update, alpha=-adj_lr)
 
     def step_group(self, group):
         for p in group['params']:
