@@ -5,8 +5,10 @@ import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
 
-def create_param(*shape):
-    param = nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape))})
+def create_param(shape, dtype=None, device=None):
+    if not isinstance(shape, tuple):
+        shape = (shape,)
+    param = nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape, device=device, dtype=dtype))})
     return param
 
 
@@ -15,12 +17,14 @@ class RMSNorm(nn.Module):
         super().__init__()
         vocab_dim = config['vocab_dim']
         eps = config['eps']
+        dtype = config['dtype']
+        device = config['device']
         self.eps = eps
-        self.weight = nn.Parameter(torch.empty(vocab_dim))
+        self.weight = create_param(vocab_dim, dtype=dtype, device=device)
 
     def forward(self, x):
         var = x.pow(2).mean(dim=-1, keepdim=True)
-        out = (x * torch.rsqrt(var + self.eps)) * self.weight
+        out = (x * torch.rsqrt(var + self.eps)) * self.weight.weight
         return out
 
 
@@ -33,6 +37,8 @@ class Attention(nn.Module):
         n_kv_heads = config['n_kv_heads']
         head_dim = config['head_dim']
         rope_theta = config['rope_theta']
+        dtype = config['dtype']
+        device = config['device']
 
         if n_heads % n_kv_heads != 0:
             raise ValueError("n_heads must be divisible by n_kv_heads")
@@ -48,10 +54,10 @@ class Attention(nn.Module):
         self.q_dim = n_heads * head_dim
         self.rope_theta = rope_theta
 
-        self.q_proj = create_param(vocab_dim, self.q_dim)
-        self.k_proj = create_param(vocab_dim, expected_kv_dim)
-        self.v_proj = create_param(vocab_dim, expected_kv_dim)
-        self.o_proj = create_param(self.q_dim, vocab_dim)
+        self.q_proj = create_param((vocab_dim, self.q_dim), dtype=dtype, device=device)
+        self.k_proj = create_param((vocab_dim, expected_kv_dim), dtype=dtype, device=device)
+        self.v_proj = create_param((vocab_dim, expected_kv_dim), dtype=dtype, device=device)
+        self.o_proj = create_param((self.q_dim, vocab_dim), dtype=dtype, device=device)
 
     def rope(self, x):
         seq_len = x.shape[-2]
@@ -98,10 +104,12 @@ class MLP(nn.Module):
         super().__init__()
         vocab_dim = config['vocab_dim']
         hidden_dim = config['hidden_dim']
+        dtype = config['dtype']
+        device = config['device']
 
-        self.gate_proj = create_param(vocab_dim, hidden_dim)
-        self.up_proj = create_param(vocab_dim, hidden_dim)
-        self.down_proj = create_param(hidden_dim, vocab_dim)
+        self.gate_proj = create_param((vocab_dim, hidden_dim), dtype=dtype, device=device)
+        self.up_proj = create_param((vocab_dim, hidden_dim), dtype=dtype, device=device)
+        self.down_proj = create_param((hidden_dim, vocab_dim), dtype=dtype, device=device)
 
     def forward(self, x):
         gate = torch.matmul(x, self.gate_proj.weight)
@@ -131,13 +139,15 @@ class Model(nn.Module):
         vocab_size = config['vocab_size']
         vocab_dim = config['vocab_dim']
         n_layers = config['n_layers']
+        dtype = config['dtype']
+        device = config['device']
 
         self.model = nn.ModuleDict({
-            'embed_tokens': create_param(vocab_size, vocab_dim),
+            'embed_tokens': create_param((vocab_size, vocab_dim), dtype=dtype, device=device),
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
         })
-        self.lm_head = create_param(vocab_dim, vocab_size)
+        self.lm_head = create_param((vocab_dim, vocab_size), dtype=dtype, device=device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
@@ -310,7 +320,7 @@ def main():
         'device': device,
     }
 
-    model = Model(**config).to(device=device, dtype=dtype)
+    model = Model(**config)
     muon_params = [p for p in model.parameters() if p.ndim == 2]
     adam_params = [p for p in model.parameters() if p.ndim != 2]
 
