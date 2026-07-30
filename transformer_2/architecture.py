@@ -1,4 +1,5 @@
 from huggingface_hub import hf_hub_download
+from transformers import AutoTokenizer
 import json
 import math
 import torch
@@ -64,13 +65,13 @@ class Attention(nn.Module):
         theta = 1.0 / (self.rope_theta ** freq_exponents)
         seq_idx = torch.arange(seq_len, device=self.device, dtype=torch.float32)
         idx_theta = torch.outer(seq_idx, theta)
-        cos = idx_theta.cos()
-        sin = idx_theta.sin()
+        cos = torch.cat((idx_theta.cos(), idx_theta.cos()), dim=-1).to(dtype=x.dtype)
+        sin = torch.cat((idx_theta.sin(), idx_theta.sin()), dim=-1).to(dtype=x.dtype)
 
-        x_even, x_odd = x[..., 0::2], x[..., 1::2]
-        out = torch.empty_like(x)
-        out[..., 0::2] = x_even * cos - x_odd * sin
-        out[..., 1::2] = x_even * sin + x_odd * cos
+        x1 = x[..., :self.head_dim // 2]
+        x2 = x[..., self.head_dim // 2:]
+        rotate_half = torch.cat((-x2, x1), dim=-1)
+        out = (x * cos) + (rotate_half * sin)
         return out
 
     def gqa(self, q, k, v):
@@ -138,6 +139,7 @@ class Model(nn.Module):
         vocab_size = config['vocab_size']
         hidden_size = config['hidden_size']
         num_hidden_layers = config['num_hidden_layers']
+        tie_word_embeddings = config['tie_word_embeddings']
         dtype = config['dtype']
         device = config['device']
 
@@ -146,7 +148,10 @@ class Model(nn.Module):
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(num_hidden_layers))
         })
-        self.lm_head = create_param(vocab_size, hidden_size, dtype=dtype, device=device)
+        if tie_word_embeddings:
+            self.lm_head = self.model['embed_tokens']
+        else:
+            self.lm_head = create_param(vocab_size, hidden_size, dtype=dtype, device=device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
@@ -163,71 +168,6 @@ class Model(nn.Module):
                 nn.init.normal_(p, mean=0.0, std=0.02)
             else:
                 nn.init.ones_(p)
-
-
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5):
-        params = list(params)
-        for p in params:
-            if p.ndim != 2:
-                raise ValueError("Muon only supports 2D parameters")
-        super().__init__(params, dict(
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=momentum,
-            nesterov=nesterov,
-            eps=eps,
-            ns_steps=ns_steps,
-        ))
-
-    def step_newton_schulz(self, update, a, b, c):
-        g = update @ update.T
-        g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
-        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
-        return update_next
-
-    def newton_schulz(self, grad, eps, steps):
-        a, b, c = 3.4445, -4.7750, 2.0315
-        update = grad.bfloat16()
-        is_transposed = grad.size(0) > grad.size(1)
-        if is_transposed:
-            update = update.T
-        update.div_(update.norm().clamp(min=eps))
-        for step_idx in range(steps):
-            update = self.step_newton_schulz(update, a, b, c)
-        if is_transposed:
-            update = update.T
-        return update
-
-    def step_param(self, p, group):
-        if p.grad is None:
-            return
-        lr = group['lr']
-        wd = group['weight_decay']
-        mom = group['momentum']
-        nest = group['nesterov']
-        eps = group['eps']
-        steps = group['ns_steps']
-        grad = p.grad
-        state = self.state[p]
-        if 'buf' not in state:
-            state['buf'] = torch.zeros_like(grad)
-        buf = state['buf']
-        buf.lerp_(grad, 1 - mom)
-        update = grad.lerp(buf, mom) if nest else buf
-        update = self.newton_schulz(update, eps, steps)
-        adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
-        p.mul_(1 - lr * wd)
-        p.add_(update, alpha=-adj_lr)
-
-    def step_group(self, group):
-        for p in group['params']:
-            self.step_param(p, group)
-
-    @torch.no_grad()
-    def step(self):
-        for group in self.param_groups:
-            self.step_group(group)
 
 
 class Adam(torch.optim.Optimizer):
@@ -277,6 +217,72 @@ class Adam(torch.optim.Optimizer):
             self.step_group(group)
 
 
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5, adam_lr=1e-3, adam_betas=(0.9, 0.999), adam_eps=1e-8, adam_wd=0.01):
+        params = list(params)
+        muon_params = [p for p in params if p.ndim == 2]
+        adam_params = [p for p in params if p.ndim != 2]
+        super().__init__(muon_params, dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=nesterov,
+            eps=eps,
+            ns_steps=ns_steps,
+        ))
+        self.adam = Adam(adam_params, lr=adam_lr, betas=adam_betas, eps=adam_eps, weight_decay=adam_wd)
+
+    def step_newton_schulz(self, update, a, b, c):
+        g = update @ update.T
+        g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
+        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
+        return update_next
+
+    def newton_schulz(self, grad, eps, steps):
+        a, b, c = 3.4445, -4.7750, 2.0315
+        update = grad.bfloat16()
+        is_transposed = grad.size(0) > grad.size(1)
+        if is_transposed:
+            update = update.T
+        update.div_(update.norm().clamp(min=eps))
+        for step_idx in range(steps):
+            update = self.step_newton_schulz(update, a, b, c)
+        if is_transposed:
+            update = update.T
+        return update
+
+    def step_param(self, p, group):
+        if p.grad is None:
+            return
+        lr = group['lr']
+        wd = group['weight_decay']
+        mom = group['momentum']
+        nest = group['nesterov']
+        eps = group['eps']
+        steps = group['ns_steps']
+        grad = p.grad
+        state = self.state[p]
+        if 'buf' not in state:
+            state['buf'] = torch.zeros_like(grad)
+        buf = state['buf']
+        buf.lerp_(grad, 1 - mom)
+        update = grad.lerp(buf, mom) if nest else buf
+        update = self.newton_schulz(update, eps, steps)
+        adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
+        p.mul_(1 - lr * wd)
+        p.add_(update, alpha=-adj_lr)
+
+    def step_group(self, group):
+        for p in group['params']:
+            self.step_param(p, group)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            self.step_group(group)
+        self.adam.step()
+
+
 def save_config(config, path):
     config_dict = {k: str(v) for k, v in config.items()}
     with open(path, 'w') as f:
@@ -295,7 +301,50 @@ def save_model(model, path):
 
 def load_model(model, path, device):
     sd = load_safetensors(path, device=str(device))
-    model.load_state_dict(sd, strict=False)
+    model_sd = model.state_dict()
+    new_sd = {}
+    for k, v in sd.items():
+        if f"{k}.weight" in model_sd:
+            new_sd[f"{k}.weight"] = v
+        elif k in model_sd:
+            new_sd[k] = v
+    model.load_state_dict(new_sd, strict=False)
+
+
+def train_step(model, optimizer, inputs, targets):
+    optimizer.zero_grad()
+    logits = model(inputs)
+    vocab_size = logits.shape[-1]
+    loss = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1))
+    loss.backward()
+    optimizer.step()
+    loss_val = loss.item()
+    return loss_val
+
+
+@torch.no_grad()
+def generate(model, tokenizer, prompt, max_new_tokens=30, temperature=0.0):
+    device = next(model.parameters()).device
+    if isinstance(prompt, str):
+        messages = [{'role': 'user', 'content': prompt}]
+        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        input_ids = tokenizer.encode(formatted_prompt, return_tensors="pt").to(device=device)
+    else:
+        input_ids = prompt.to(device=device)
+
+    for _ in range(max_new_tokens):
+        logits = model(input_ids)
+        if temperature <= 0.0:
+            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        else:
+            next_token_logits = logits[:, -1, :] / temperature
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+        input_ids = torch.cat([input_ids, next_token], dim=-1)
+
+    response_tokens = input_ids[0].tolist()
+    response_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
+    return response_text
 
 
 def main():
@@ -306,7 +355,9 @@ def main():
     else:
         device = torch.device("cpu")
 
-    repo_id = "unsloth/Llama-3.2-1B-Instruct"
+    name = "Llama-3.2-1B-Instruct"
+    repo_id = f"unsloth/{name}"
+    
     config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
     weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
 
@@ -324,25 +375,27 @@ def main():
     model = Model(**config)
     load_model(model, weights_path, device=device)
 
-    muon_params = [p for p in model.parameters() if p.ndim == 2]
-    adam_params = [p for p in model.parameters() if p.ndim != 2]
+    muon = Muon(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
+    tokenizer = AutoTokenizer.from_pretrained(repo_id)
 
-    muon = Muon(muon_params, lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
-    adam = Adam(adam_params, lr=config['lr'], weight_decay=config['weight_decay'])
+    prompt = "Explain how a transformer model uses multi-head self-attention to process text."
+    print(f"--- Inference BEFORE Training ---")
+    print(f"Prompt: {prompt}")
+    response_before = generate(model, tokenizer, prompt, max_new_tokens=40)
+    print(f"Response:\n{response_before}\n")
 
-    batch_size, seq_len = 2, 1024
+    print(f"--- Running 1 Train Step ---")
+    batch_size, seq_len = 2, 16
     vocab_size = config['vocab_size']
-
     inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
     targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
-    logits = model(inputs)
-    loss = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1))
-    loss.backward()
-    print(f"Loss: {loss.item():.4f}")
+    loss_val = train_step(model, muon, inputs, targets)
+    print(f"Train loss: {loss_val:.4f}\n")
 
-    muon.step()
-    adam.step()
+    print(f"--- Inference AFTER Training ---")
+    response_after = generate(model, tokenizer, prompt, max_new_tokens=40)
+    print(f"Response:\n{response_after}")
 
 
 if __name__ == "__main__":
