@@ -54,10 +54,10 @@ class Attention(nn.Module):
         self.rope_theta = rope_theta
         self.device = device
 
-        self.q_proj = create_param(vocab_dim, self.q_dim, dtype=dtype, device=device)
-        self.k_proj = create_param(vocab_dim, expected_kv_dim, dtype=dtype, device=device)
-        self.v_proj = create_param(vocab_dim, expected_kv_dim, dtype=dtype, device=device)
-        self.o_proj = create_param(self.q_dim, vocab_dim, dtype=dtype, device=device)
+        self.q_proj = create_param(self.q_dim, vocab_dim, dtype=dtype, device=device)
+        self.k_proj = create_param(expected_kv_dim, vocab_dim, dtype=dtype, device=device)
+        self.v_proj = create_param(expected_kv_dim, vocab_dim, dtype=dtype, device=device)
+        self.o_proj = create_param(vocab_dim, self.q_dim, dtype=dtype, device=device)
 
     def rope(self, x):
         batch_size, num_heads, seq_len, head_dim = x.shape
@@ -86,16 +86,16 @@ class Attention(nn.Module):
 
     def forward(self, x):
         batch_size, seq_len, vocab_dim = x.shape
-        q = torch.matmul(x, self.q_proj.weight).reshape(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        k = torch.matmul(x, self.k_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        v = torch.matmul(x, self.v_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        q = F.linear(x, self.q_proj.weight).reshape(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        k = F.linear(x, self.k_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = F.linear(x, self.v_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
         q = self.rope(q)
         k = self.rope(k)
 
         out = self.gqa(q, k, v)
         out = out.transpose(1, 2).reshape(batch_size, seq_len, self.q_dim)
-        out = torch.matmul(out, self.o_proj.weight)
+        out = F.linear(out, self.o_proj.weight)
         return out
 
 
@@ -107,14 +107,14 @@ class MLP(nn.Module):
         dtype = config['dtype']
         device = config['device']
 
-        self.gate_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
-        self.up_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
-        self.down_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
+        self.gate_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
+        self.up_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
+        self.down_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
 
     def forward(self, x):
-        gate = torch.matmul(x, self.gate_proj.weight)
-        up = torch.matmul(x, self.up_proj.weight)
-        out = torch.matmul(F.silu(gate) * up, self.down_proj.weight)
+        gate = F.linear(x, self.gate_proj.weight)
+        up = F.linear(x, self.up_proj.weight)
+        out = F.linear(F.silu(gate) * up, self.down_proj.weight)
         return out
 
 
@@ -147,14 +147,14 @@ class Model(nn.Module):
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
         })
-        self.lm_head = create_param(vocab_dim, vocab_size, dtype=dtype, device=device)
+        self.lm_head = create_param(vocab_size, vocab_dim, dtype=dtype, device=device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
         for layer in self.model.layers:
             x = layer(x)
         x = self.model.norm(x)
-        logits = torch.matmul(x, self.lm_head.weight)
+        logits = F.linear(x, self.lm_head.weight)
         return logits
 
     @torch.no_grad()
