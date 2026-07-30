@@ -52,6 +52,7 @@ class Attention(nn.Module):
         self.n_kv_heads = n_kv_heads
         self.q_dim = n_heads * head_dim
         self.rope_theta = rope_theta
+        self.device = device
 
         self.q_proj = create_param(vocab_dim, self.q_dim, dtype=dtype, device=device)
         self.k_proj = create_param(vocab_dim, expected_kv_dim, dtype=dtype, device=device)
@@ -59,10 +60,10 @@ class Attention(nn.Module):
         self.o_proj = create_param(self.q_dim, vocab_dim, dtype=dtype, device=device)
 
     def rope(self, x):
-        seq_len = x.shape[-2]
-        freq_exponents = torch.arange(0, self.head_dim, 2, device=x.device, dtype=torch.float32) / self.head_dim
+        batch_size, num_heads, seq_len, head_dim = x.shape
+        freq_exponents = torch.arange(0, self.head_dim, 2, device=self.device, dtype=torch.float32) / self.head_dim
         theta = 1.0 / (self.rope_theta ** freq_exponents)
-        seq_idx = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        seq_idx = torch.arange(seq_len, device=self.device, dtype=torch.float32)
         idx_theta = torch.outer(seq_idx, theta)
         cos = idx_theta.cos()
         sin = idx_theta.sin()
