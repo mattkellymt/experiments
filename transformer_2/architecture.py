@@ -165,6 +165,7 @@ class Model(nn.Module):
 
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5):
+        params = [p for p in params if p.ndim == 2]
         super().__init__(params, dict(
             lr=lr,
             weight_decay=weight_decay,
@@ -194,8 +195,6 @@ class Muon(torch.optim.Optimizer):
         return update
 
     def step_param(self, p, group):
-        if p.ndim != 2:
-            raise ValueError("Muon only supports 2D parameters")
         if p.grad is None:
             return
         lr = group['lr']
@@ -261,8 +260,8 @@ def main():
     }
 
     model = Model(**config).to(device=device, dtype=dtype)
-    muon_params = [p for p in model.parameters() if p.ndim == 2]
-    optimizer = Muon(muon_params, lr=lr, weight_decay=weight_decay, momentum=momentum)
+    params = model.parameters()
+    optimizer = Muon(params, lr=lr, weight_decay=weight_decay, momentum=momentum)
 
 
 if __name__ == "__main__":
