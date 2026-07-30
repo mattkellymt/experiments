@@ -1,6 +1,4 @@
-import json
 import math
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,13 +6,7 @@ from safetensors.torch import load_file as load_safetensors, save_file as save_s
 
 
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=None, weight_decay=None, momentum=None, nesterov=None, eps=None, ns_steps=None):
-        lr = 1e-3 if lr is None else lr
-        weight_decay = 0.1 if weight_decay is None else weight_decay
-        momentum = 0.95 if momentum is None else momentum
-        nesterov = True if nesterov is None else nesterov
-        eps = 1e-7 if eps is None else eps
-        ns_steps = 5 if ns_steps is None else ns_steps
+    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5):
         super().__init__(params, dict(
             lr=lr,
             weight_decay=weight_decay,
@@ -24,9 +16,7 @@ class Muon(torch.optim.Optimizer):
             ns_steps=ns_steps,
         ))
 
-    def addmm(self, inp, mat1, mat2, beta=None, alpha=None):
-        beta = 1 if beta is None else beta
-        alpha = 1 if alpha is None else alpha
+    def addmm(self, inp, mat1, mat2, beta=1, alpha=1):
         return beta * inp + alpha * (mat1 @ mat2)
 
     def newton_schulz_step(self, upd, a, b, c):
@@ -85,63 +75,18 @@ def create_param(*shape):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, vocab_dim, eps=None, **kwargs):
-        eps = 1e-5 if eps is None else eps
+    def __init__(self, vocab_dim, eps, **kwargs):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.empty(vocab_dim))
 
     def forward(self, x):
-        var = x.to(torch.float32).pow(2).mean(dim=-1, keepdim=True)
-        return (x * torch.rsqrt(var + self.eps).to(x.dtype)) * self.weight
-
-
-class RoPE(nn.Module):
-    def __init__(self, head_dim, rope_theta=None, rope_scaling=None, seq_len=None, **kwargs):
-        rope_theta = 500000.0 if rope_theta is None else rope_theta
-        seq_len = 2048 if seq_len is None else seq_len
-        super().__init__()
-        self.head_dim = head_dim
-        inv_freq = 1.0 / (rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
-        if rope_scaling and rope_scaling.get("rope_type") == "llama3":
-            factor = rope_scaling.get("factor", 32.0)
-            low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
-            high_freq_factor = rope_scaling.get("high_freq_factor", 4.0)
-            orig_max = rope_scaling.get("original_max_position_embeddings", 8192)
-
-            low_wavelen = orig_max / low_freq_factor
-            high_wavelen = orig_max / high_freq_factor
-
-            new_inv_freq = []
-            for freq in inv_freq:
-                wavelen = 2 * math.pi / freq.item()
-                if wavelen < high_wavelen:
-                    new_inv_freq.append(freq.item())
-                elif wavelen > low_wavelen:
-                    new_inv_freq.append(freq.item() / factor)
-                else:
-                    smooth = (orig_max / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
-                    new_freq = (1 - smooth) * (freq.item() / factor) + smooth * freq.item()
-                    new_inv_freq.append(new_freq)
-            inv_freq = torch.tensor(new_inv_freq, dtype=torch.float32)
-
-        t = torch.arange(seq_len, dtype=torch.float32)
-        freqs = torch.outer(t, inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-
-        self.register_buffer('cos', emb.cos(), persistent=False)
-        self.register_buffer('sin', emb.sin(), persistent=False)
-
-    def forward(self, position_ids):
-        cos = self.cos[position_ids].unsqueeze(2)
-        sin = self.sin[position_ids].unsqueeze(2)
-        return cos, sin
+        var = x.pow(2).mean(dim=-1, keepdim=True)
+        return (x * torch.rsqrt(var + self.eps)) * self.weight
 
 
 class Attention(nn.Module):
-    def __init__(self, vocab_dim, kv_dim, n_heads, n_kv_heads, head_dim, rope_theta=None, rope_scaling=None, seq_len=None, **kwargs):
-        rope_theta = 500000.0 if rope_theta is None else rope_theta
-        seq_len = 2048 if seq_len is None else seq_len
+    def __init__(self, vocab_dim, kv_dim, n_heads, n_kv_heads, head_dim, rope_theta, seq_len, **kwargs):
         super().__init__()
         if n_heads % n_kv_heads != 0:
             raise ValueError("n_heads must be divisible by n_kv_heads")
@@ -149,48 +94,52 @@ class Attention(nn.Module):
             raise ValueError("head_dim must be even")
         expected_kv_dim = n_kv_heads * head_dim
         if kv_dim != expected_kv_dim:
-            raise ValueError(f"kv_dim ({kv_dim}) must equal n_kv_heads * head_dim ({expected_kv_dim})")
+            raise ValueError("kv_dim must equal n_kv_heads * head_dim")
 
         self.n_heads = n_heads
         self.head_dim = head_dim
         self.n_kv_heads = n_kv_heads
         self.q_dim = n_heads * head_dim
 
+        theta = 1.0 / (rope_theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
+        seq_idx = torch.arange(seq_len, dtype=torch.float32)
+        idx_theta = torch.outer(seq_idx, theta)
+
+        self.register_buffer('rope_cos', idx_theta.cos(), persistent=False)
+        self.register_buffer('rope_sin', idx_theta.sin(), persistent=False)
+
         self.q_proj = create_param(vocab_dim, self.q_dim)
         self.k_proj = create_param(vocab_dim, expected_kv_dim)
         self.v_proj = create_param(vocab_dim, expected_kv_dim)
         self.o_proj = create_param(self.q_dim, vocab_dim)
 
-    def forward(self, x, position_embeddings=None, attention_mask=None):
+    def rope(self, x):
+        s = x.shape[-2]
+        if s > self.rope_cos.shape[0]:
+            raise ValueError("input sequence length exceeds configured seq_len")
+        cos = self.rope_cos[:s]
+        sin = self.rope_sin[:s]
+        x_even, x_odd = x[..., 0::2], x[..., 1::2]
+        out = torch.empty_like(x)
+        out[..., 0::2] = x_even * cos - x_odd * sin
+        out[..., 1::2] = x_even * sin + x_odd * cos
+        return out
+
+    def forward(self, x):
         b, s, d = x.shape
         q = torch.matmul(x, self.q_proj.weight).reshape(b, s, self.n_heads, self.head_dim).transpose(1, 2)
         k = torch.matmul(x, self.k_proj.weight).reshape(b, s, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = torch.matmul(x, self.v_proj.weight).reshape(b, s, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
-        if position_embeddings is not None:
-            cos, sin = position_embeddings
-            def apply_rope(x_to_rotate):
-                x1 = x_to_rotate[..., :self.head_dim // 2]
-                x2 = x_to_rotate[..., self.head_dim // 2:]
-                rotate_x = torch.cat((-x2, x1), dim=-1)
-                return (x_to_rotate * cos) + (rotate_x * sin)
-            
-            q = apply_rope(q.transpose(1, 2)).transpose(1, 2)
-            k = apply_rope(k.transpose(1, 2)).transpose(1, 2)
+        q = self.rope(q)
+        k = self.rope(k)
 
         n_rep = self.n_heads // self.n_kv_heads
-        
-        q_gqa = q.view(b, self.n_kv_heads, n_rep, s, self.head_dim)
-        k_gqa = k.unsqueeze(2)
-        v_gqa = v.unsqueeze(2)
+        k = k.repeat_interleave(n_rep, dim=1)
+        v = v.repeat_interleave(n_rep, dim=1)
 
-        out = F.scaled_dot_product_attention(
-            q_gqa, k_gqa, v_gqa, 
-            attn_mask=attention_mask,
-            is_causal=(attention_mask is None)
-        )
-        
-        out = out.reshape(b, self.n_heads, s, self.head_dim).transpose(1, 2).reshape(b, s, self.q_dim)
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        out = out.transpose(1, 2).reshape(b, s, self.q_dim)
         return torch.matmul(out, self.o_proj.weight)
 
 
@@ -215,8 +164,8 @@ class Block(nn.Module):
         self.post_attention_layernorm = RMSNorm(**kwargs)
         self.mlp = MLP(**kwargs)
 
-    def forward(self, x, position_embeddings=None, attention_mask=None):
-        x = x + self.self_attn(self.input_layernorm(x), position_embeddings=position_embeddings, attention_mask=attention_mask)
+    def forward(self, x):
+        x = x + self.self_attn(self.input_layernorm(x))
         x = x + self.mlp(self.post_attention_layernorm(x))
         return x
 
@@ -231,23 +180,17 @@ class Model(nn.Module):
 
         self.model = nn.ModuleDict({
             'embed_tokens': create_param(vocab_size, vocab_dim),
-            'rotary_emb': RoPE(**config),
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
         })
+        self.lm_head = create_param(vocab_dim, vocab_size)
 
-    def forward(self, inputs, position_ids=None, attention_mask=None):
-        b, s = inputs.shape
-        if position_ids is None:
-            position_ids = torch.arange(s, dtype=torch.long, device=inputs.device).unsqueeze(0).expand(b, -1)
-            
-        position_embeddings = self.model.rotary_emb(position_ids)
-        
+    def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
         for layer in self.model.layers:
-            x = layer(x, position_embeddings=position_embeddings, attention_mask=attention_mask)
+            x = layer(x)
         x = self.model.norm(x)
-        return torch.matmul(x, self.model.embed_tokens.weight.T)
+        return torch.matmul(x, self.lm_head.weight)
 
     @torch.no_grad()
     def init_params(self):
@@ -264,3 +207,41 @@ class Model(nn.Module):
         dev = device or next(self.parameters()).device
         sd = load_safetensors(path, device=str(dev))
         self.load_state_dict(sd, strict=False)
+
+
+def main():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    dtype = torch.bfloat16
+
+    config = {
+        'n_layers': 2,
+        'batch_size': 4,
+        'n_heads': 8,
+        'n_kv_heads': 2,
+        'head_dim': 16,
+        'seq_len': 32,
+        'vocab_dim': 128,
+        'kv_dim': 32,
+        'hidden_dim': 256,
+        'vocab_size': 512,
+        'eps': 1 / 1024,
+        'rope_theta': 10_000.0,
+        'muon_lr': 0.01,
+        'momentum': 0.95,
+        'weight_decay': 0.1,
+        'loss_target': 1 / 4096,
+        'dtype': dtype,
+        'device': device,
+    }
+
+    model = Model(**config).to(device=device, dtype=dtype)
+
+
+if __name__ == "__main__":
+    main()
