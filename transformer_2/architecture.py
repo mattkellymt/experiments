@@ -180,7 +180,6 @@ class Model(nn.Module):
     def init_params(self):
         std_val = 0.02
         mean_val = 0.0
-        one_val = 1.0
         for p in self.parameters():
             if p.ndim > 1:
                 nn.init.normal_(p, mean_val, std_val)
