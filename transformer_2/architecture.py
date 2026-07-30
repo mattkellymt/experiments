@@ -359,6 +359,7 @@ def generate(model, tokenizer, prompt, max_new_tokens, temperature):
     messages = [{'role': 'user', 'content': prompt}]
     formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     prompt_ids = tokenizer.encode(formatted_prompt)
+    prompt_tokens = torch.tensor([prompt_ids], device=device)
     prompt_len = prompt_tokens.shape[1]
     input_shape = (1, prompt_len + max_new_tokens)
     input_ids = torch.empty(input_shape, dtype=torch.long, device=device)
@@ -392,9 +393,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    name = "Llama-3.2-1B-Instruct"
-    repo_id = f"unsloth/{name}"
-    
+    repo_id = f"unsloth/Llama-3.2-1B-Instruct"
     config_path = hf_hub_download(repo_id, "config.json")
     weights_path = hf_hub_download(repo_id, "model.safetensors")
 
