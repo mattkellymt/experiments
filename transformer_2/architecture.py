@@ -17,12 +17,14 @@ class Muon(torch.optim.Optimizer):
         ))
 
     def addmm(self, inp, mat1, mat2, beta=1, alpha=1):
-        return beta * inp + alpha * (mat1 @ mat2)
+        res = beta * inp + alpha * (mat1 @ mat2)
+        return res
 
     def newton_schulz_step(self, upd, a, b, c):
         g = upd @ upd.T
         g_upd = self.addmm(g, g, g, beta=b, alpha=c)
-        return self.addmm(upd, g_upd, upd, beta=a)
+        upd_next = self.addmm(upd, g_upd, upd, beta=a)
+        return upd_next
 
     def newton_schulz(self, grad, eps, steps):
         a, b, c = 3.4445, -4.7750, 2.0315
@@ -71,7 +73,8 @@ class Muon(torch.optim.Optimizer):
 
 
 def create_param(*shape):
-    return nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape))})
+    param = nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape))})
+    return param
 
 
 class RMSNorm(nn.Module):
@@ -84,7 +87,8 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         var = x.pow(2).mean(dim=-1, keepdim=True)
-        return (x * torch.rsqrt(var + self.eps)) * self.weight
+        out = (x * torch.rsqrt(var + self.eps)) * self.weight
+        return out
 
 
 class Attention(nn.Module):
@@ -137,7 +141,8 @@ class Attention(nn.Module):
         k_gqa = k.unsqueeze(2)
         v_gqa = v.unsqueeze(2)
         out = F.scaled_dot_product_attention(q_gqa, k_gqa, v_gqa, is_causal=True)
-        return out.reshape(batch_size, self.n_heads, seq_len, self.head_dim)
+        out = out.reshape(batch_size, self.n_heads, seq_len, self.head_dim)
+        return out
 
     def forward(self, x):
         batch_size, seq_len, vocab_dim = x.shape
@@ -150,7 +155,8 @@ class Attention(nn.Module):
 
         out = self.gqa(q, k, v)
         out = out.transpose(1, 2).reshape(batch_size, seq_len, self.q_dim)
-        return torch.matmul(out, self.o_proj.weight)
+        out = torch.matmul(out, self.o_proj.weight)
+        return out
 
 
 class MLP(nn.Module):
@@ -158,6 +164,7 @@ class MLP(nn.Module):
         super().__init__()
         vocab_dim = config['vocab_dim']
         hidden_dim = config['hidden_dim']
+
         self.gate_proj = create_param(vocab_dim, hidden_dim)
         self.up_proj = create_param(vocab_dim, hidden_dim)
         self.down_proj = create_param(hidden_dim, vocab_dim)
@@ -165,7 +172,8 @@ class MLP(nn.Module):
     def forward(self, x):
         gate = torch.matmul(x, self.gate_proj.weight)
         up = torch.matmul(x, self.up_proj.weight)
-        return torch.matmul(F.silu(gate) * up, self.down_proj.weight)
+        out = torch.matmul(F.silu(gate) * up, self.down_proj.weight)
+        return out
 
 
 class Block(nn.Module):
@@ -202,7 +210,8 @@ class Model(nn.Module):
         for layer in self.model.layers:
             x = layer(x)
         x = self.model.norm(x)
-        return torch.matmul(x, self.lm_head.weight)
+        logits = torch.matmul(x, self.lm_head.weight)
+        return logits
 
     @torch.no_grad()
     def init_params(self):
