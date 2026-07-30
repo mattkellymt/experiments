@@ -306,9 +306,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    name = "Llama-3.2-1B-Instruct"
-    repo_id = f"unsloth/{name}"
-    
+    repo_id = "unsloth/Llama-3.2-1B-Instruct"
     config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
     weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
 
@@ -332,13 +330,16 @@ def main():
     muon = Muon(muon_params, lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
     adam = Adam(adam_params, lr=config['lr'], weight_decay=config['weight_decay'])
 
-    batch_size, seq_len = 2, 16
-    inputs = torch.randint(0, config['vocab_size'], (batch_size, seq_len), device=device)
-    targets = torch.randint(0, config['vocab_size'], (batch_size, seq_len), device=device)
+    batch_size, seq_len = 2, 1024
+    vocab_size = config['vocab_size']
+
+    inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+    targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
     logits = model(inputs)
-    loss = F.cross_entropy(logits.view(-1, config['vocab_size']), targets.view(-1))
+    loss = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1))
     loss.backward()
+    print(f"Loss: {loss.item():.4f}")
 
     muon.step()
     adam.step()
