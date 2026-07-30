@@ -5,10 +5,9 @@ import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
 
-def create_param(shape, dtype=None, device=None):
-    if not isinstance(shape, tuple):
-        shape = (shape,)
-    param = nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape, device=device, dtype=dtype))})
+def create_param(*shape, dtype=None, device=None):
+    param = nn.Parameter(torch.empty(*shape, device=device, dtype=dtype))
+    param = nn.ParameterDict({'weight': param})
     return param
 
 
@@ -54,10 +53,10 @@ class Attention(nn.Module):
         self.q_dim = n_heads * head_dim
         self.rope_theta = rope_theta
 
-        self.q_proj = create_param((vocab_dim, self.q_dim), dtype=dtype, device=device)
-        self.k_proj = create_param((vocab_dim, expected_kv_dim), dtype=dtype, device=device)
-        self.v_proj = create_param((vocab_dim, expected_kv_dim), dtype=dtype, device=device)
-        self.o_proj = create_param((self.q_dim, vocab_dim), dtype=dtype, device=device)
+        self.q_proj = create_param(vocab_dim, self.q_dim, dtype=dtype, device=device)
+        self.k_proj = create_param(vocab_dim, expected_kv_dim, dtype=dtype, device=device)
+        self.v_proj = create_param(vocab_dim, expected_kv_dim, dtype=dtype, device=device)
+        self.o_proj = create_param(self.q_dim, vocab_dim, dtype=dtype, device=device)
 
     def rope(self, x):
         seq_len = x.shape[-2]
@@ -107,9 +106,9 @@ class MLP(nn.Module):
         dtype = config['dtype']
         device = config['device']
 
-        self.gate_proj = create_param((vocab_dim, hidden_dim), dtype=dtype, device=device)
-        self.up_proj = create_param((vocab_dim, hidden_dim), dtype=dtype, device=device)
-        self.down_proj = create_param((hidden_dim, vocab_dim), dtype=dtype, device=device)
+        self.gate_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
+        self.up_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
+        self.down_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
 
     def forward(self, x):
         gate = torch.matmul(x, self.gate_proj.weight)
@@ -143,11 +142,11 @@ class Model(nn.Module):
         device = config['device']
 
         self.model = nn.ModuleDict({
-            'embed_tokens': create_param((vocab_size, vocab_dim), dtype=dtype, device=device),
+            'embed_tokens': create_param(vocab_size, vocab_dim, dtype=dtype, device=device),
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
         })
-        self.lm_head = create_param((vocab_dim, vocab_size), dtype=dtype, device=device)
+        self.lm_head = create_param(vocab_dim, vocab_size, dtype=dtype, device=device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
