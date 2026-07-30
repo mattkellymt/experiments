@@ -294,9 +294,8 @@ def save_model(model, path):
     save_safetensors(model.state_dict(), path)
 
 
-def load_model(model, path, device=None):
-    dev = device or next(model.parameters()).device
-    sd = load_safetensors(path, device=str(dev))
+def load_model(model, path, device):
+    sd = load_safetensors(path, device=str(device))
     model.load_state_dict(sd, strict=False)
 
 
@@ -308,25 +307,29 @@ def main():
     else:
         device = torch.device("cpu")
 
-    dtype = torch.bfloat16
-    lr = 0.01
-    weight_decay = 0.1
-    momentum = 0.95
+    params = {
+        'device': device,
+        'dtype': torch.bfloat16,
+        'lr': 0.01,
+        'weight_decay': 0.1,
+        'momentum': 0.95,
+    }
 
     repo_id = "unsloth/Llama-3.2-1B-Instruct"
     config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
     weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
 
-    config = load_config(config_path, lr=lr, weight_decay=weight_decay, momentum=momentum, dtype=dtype, device=device)
+    config = load_config(config_path)
+    config.update(params)
 
     model = Model(**config)
-    load_model(model, weights_path)
+    load_model(model, weights_path, device=config['device'])
 
     muon_params = [p for p in model.parameters() if p.ndim == 2]
     adam_params = [p for p in model.parameters() if p.ndim != 2]
 
-    muon = Muon(muon_params, lr=lr, weight_decay=weight_decay, momentum=momentum)
-    adam = Adam(adam_params, lr=lr, weight_decay=weight_decay)
+    muon = Muon(muon_params, lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
+    adam = Adam(adam_params, lr=config['lr'], weight_decay=config['weight_decay'])
 
 
 if __name__ == "__main__":
