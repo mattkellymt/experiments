@@ -283,10 +283,9 @@ def save_config(config, path):
         json.dump(config_dict, f, indent=2)
 
 
-def load_config(path, **extra_settings):
+def load_config(path):
     with open(path, 'r') as f:
         config = json.load(f)
-    config.update(extra_settings)
     return config
 
 
@@ -307,29 +306,42 @@ def main():
     else:
         device = torch.device("cpu")
 
-    params = {
+    name = "Llama-3.2-1B-Instruct"
+    repo_id = f"unsloth/{name}"
+    
+    config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
+    weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
+
+    config = load_config(config_path)
+    config.update({
         'device': device,
         'dtype': torch.bfloat16,
         'lr': 0.01,
         'weight_decay': 0.1,
         'momentum': 0.95,
-    }
-
-    repo_id = "unsloth/Llama-3.2-1B-Instruct"
-    config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
-    weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
-
-    config = load_config(config_path)
-    config.update(params)
+        'config_path': config_path,
+        'weights_path': weights_path,
+    })
 
     model = Model(**config)
-    load_model(model, weights_path, device=config['device'])
+    load_model(model, weights_path, device=device)
 
     muon_params = [p for p in model.parameters() if p.ndim == 2]
     adam_params = [p for p in model.parameters() if p.ndim != 2]
 
     muon = Muon(muon_params, lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
     adam = Adam(adam_params, lr=config['lr'], weight_decay=config['weight_decay'])
+
+    batch_size, seq_len = 2, 16
+    inputs = torch.randint(0, config['vocab_size'], (batch_size, seq_len), device=device)
+    targets = torch.randint(0, config['vocab_size'], (batch_size, seq_len), device=device)
+
+    logits = model(inputs)
+    loss = F.cross_entropy(logits.view(-1, config['vocab_size']), targets.view(-1))
+    loss.backward()
+
+    muon.step()
+    adam.step()
 
 
 if __name__ == "__main__":
