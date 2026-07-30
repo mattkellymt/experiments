@@ -1,3 +1,5 @@
+from huggingface_hub import hf_hub_download
+import json
 import math
 import torch
 import torch.nn as nn
@@ -14,50 +16,47 @@ def create_param(*shape, dtype=None, device=None):
 class RMSNorm(nn.Module):
     def __init__(self, **config):
         super().__init__()
-        vocab_dim = config['vocab_dim']
-        eps = config['eps']
+        hidden_size = config['hidden_size']
+        rms_norm_eps = config['rms_norm_eps']
         dtype = config['dtype']
         device = config['device']
-        self.eps = eps
-        self.weight = create_param(vocab_dim, dtype=dtype, device=device)
+        self.rms_norm_eps = rms_norm_eps
+        self.weight = create_param(hidden_size, dtype=dtype, device=device)
 
     def forward(self, x):
         var = x.pow(2).mean(dim=-1, keepdim=True)
-        out = (x * torch.rsqrt(var + self.eps)) * self.weight.weight
+        out = (x * torch.rsqrt(var + self.rms_norm_eps)) * self.weight.weight
         return out
 
 
 class Attention(nn.Module):
     def __init__(self, **config):
         super().__init__()
-        vocab_dim = config['vocab_dim']
-        kv_dim = config['kv_dim']
-        n_heads = config['n_heads']
-        n_kv_heads = config['n_kv_heads']
+        hidden_size = config['hidden_size']
+        num_attention_heads = config['num_attention_heads']
+        num_key_value_heads = config['num_key_value_heads']
         head_dim = config['head_dim']
         rope_theta = config['rope_theta']
         dtype = config['dtype']
         device = config['device']
 
-        if n_heads % n_kv_heads != 0:
-            raise ValueError("n_heads must be divisible by n_kv_heads")
+        expected_kv_dim = num_key_value_heads * head_dim
+        if num_attention_heads % num_key_value_heads != 0:
+            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
         if head_dim % 2 != 0:
             raise ValueError("head_dim must be even")
-        expected_kv_dim = n_kv_heads * head_dim
-        if kv_dim != expected_kv_dim:
-            raise ValueError("kv_dim must equal n_kv_heads * head_dim")
 
-        self.n_heads = n_heads
+        self.num_attention_heads = num_attention_heads
         self.head_dim = head_dim
-        self.n_kv_heads = n_kv_heads
-        self.q_dim = n_heads * head_dim
+        self.num_key_value_heads = num_key_value_heads
+        self.q_dim = num_attention_heads * head_dim
         self.rope_theta = rope_theta
         self.device = device
 
-        self.q_proj = create_param(self.q_dim, vocab_dim, dtype=dtype, device=device)
-        self.k_proj = create_param(expected_kv_dim, vocab_dim, dtype=dtype, device=device)
-        self.v_proj = create_param(expected_kv_dim, vocab_dim, dtype=dtype, device=device)
-        self.o_proj = create_param(vocab_dim, self.q_dim, dtype=dtype, device=device)
+        self.q_proj = create_param(self.q_dim, hidden_size, dtype=dtype, device=device)
+        self.k_proj = create_param(expected_kv_dim, hidden_size, dtype=dtype, device=device)
+        self.v_proj = create_param(expected_kv_dim, hidden_size, dtype=dtype, device=device)
+        self.o_proj = create_param(hidden_size, self.q_dim, dtype=dtype, device=device)
 
     def rope(self, x):
         batch_size, num_heads, seq_len, head_dim = x.shape
@@ -76,19 +75,19 @@ class Attention(nn.Module):
 
     def gqa(self, q, k, v):
         batch_size, num_heads, seq_len, head_dim = q.shape
-        n_rep = self.n_heads // self.n_kv_heads
-        q_gqa = q.view(batch_size, self.n_kv_heads, n_rep, seq_len, self.head_dim)
+        n_rep = self.num_attention_heads // self.num_key_value_heads
+        q_gqa = q.view(batch_size, self.num_key_value_heads, n_rep, seq_len, self.head_dim)
         k_gqa = k.unsqueeze(2)
         v_gqa = v.unsqueeze(2)
         out = F.scaled_dot_product_attention(q_gqa, k_gqa, v_gqa, is_causal=True)
-        out = out.reshape(batch_size, self.n_heads, seq_len, self.head_dim)
+        out = out.reshape(batch_size, self.num_attention_heads, seq_len, self.head_dim)
         return out
 
     def forward(self, x):
-        batch_size, seq_len, vocab_dim = x.shape
-        q = F.linear(x, self.q_proj.weight).reshape(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        k = F.linear(x, self.k_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        v = F.linear(x, self.v_proj.weight).reshape(batch_size, seq_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        batch_size, seq_len, hidden_size = x.shape
+        q = F.linear(x, self.q_proj.weight).reshape(batch_size, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = F.linear(x, self.k_proj.weight).reshape(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        v = F.linear(x, self.v_proj.weight).reshape(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         q = self.rope(q)
         k = self.rope(k)
@@ -102,14 +101,14 @@ class Attention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, **config):
         super().__init__()
-        vocab_dim = config['vocab_dim']
-        hidden_dim = config['hidden_dim']
+        hidden_size = config['hidden_size']
+        intermediate_size = config['intermediate_size']
         dtype = config['dtype']
         device = config['device']
 
-        self.gate_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
-        self.up_proj = create_param(hidden_dim, vocab_dim, dtype=dtype, device=device)
-        self.down_proj = create_param(vocab_dim, hidden_dim, dtype=dtype, device=device)
+        self.gate_proj = create_param(intermediate_size, hidden_size, dtype=dtype, device=device)
+        self.up_proj = create_param(intermediate_size, hidden_size, dtype=dtype, device=device)
+        self.down_proj = create_param(hidden_size, intermediate_size, dtype=dtype, device=device)
 
     def forward(self, x):
         gate = F.linear(x, self.gate_proj.weight)
@@ -137,17 +136,17 @@ class Model(nn.Module):
         super().__init__()
         self.config = config
         vocab_size = config['vocab_size']
-        vocab_dim = config['vocab_dim']
-        n_layers = config['n_layers']
+        hidden_size = config['hidden_size']
+        num_hidden_layers = config['num_hidden_layers']
         dtype = config['dtype']
         device = config['device']
 
         self.model = nn.ModuleDict({
-            'embed_tokens': create_param(vocab_size, vocab_dim, dtype=dtype, device=device),
+            'embed_tokens': create_param(vocab_size, hidden_size, dtype=dtype, device=device),
             'norm': RMSNorm(**config),
-            'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
+            'layers': nn.ModuleList(Block(**config) for _ in range(num_hidden_layers))
         })
-        self.lm_head = create_param(vocab_size, vocab_dim, dtype=dtype, device=device)
+        self.lm_head = create_param(vocab_size, hidden_size, dtype=dtype, device=device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
@@ -164,14 +163,6 @@ class Model(nn.Module):
                 nn.init.normal_(p, mean=0.0, std=0.02)
             else:
                 nn.init.ones_(p)
-
-    def save(self, path):
-        save_safetensors(self.state_dict(), path)
-
-    def load(self, path, device=None):
-        dev = device or next(self.parameters()).device
-        sd = load_safetensors(path, device=str(dev))
-        self.load_state_dict(sd, strict=False)
 
 
 class Muon(torch.optim.Optimizer):
@@ -286,6 +277,34 @@ class Adam(torch.optim.Optimizer):
             self.step_group(group)
 
 
+def save_config(config, path):
+    serializable = {}
+    for k, v in config.items():
+        if isinstance(v, (torch.device, torch.dtype)):
+            serializable[k] = str(v)
+        else:
+            serializable[k] = v
+    with open(path, 'w') as f:
+        json.dump(serializable, f, indent=2)
+
+
+def load_config(path, **extra_settings):
+    with open(path, 'r') as f:
+        config = json.load(f)
+    config.update(extra_settings)
+    return config
+
+
+def save_model(model, path):
+    save_safetensors(model.state_dict(), path)
+
+
+def load_model(model, path, device=None):
+    dev = device or next(model.parameters()).device
+    sd = load_safetensors(path, device=str(dev))
+    model.load_state_dict(sd, strict=False)
+
+
 def main():
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -299,28 +318,15 @@ def main():
     weight_decay = 0.1
     momentum = 0.95
 
-    config = {
-        'n_layers': 2,
-        'batch_size': 4,
-        'n_heads': 8,
-        'n_kv_heads': 2,
-        'head_dim': 16,
-        'seq_len': 32,
-        'vocab_dim': 128,
-        'kv_dim': 32,
-        'hidden_dim': 256,
-        'vocab_size': 512,
-        'eps': 1 / 1024,
-        'rope_theta': 10_000.0,
-        'lr': lr,
-        'momentum': momentum,
-        'weight_decay': weight_decay,
-        'loss_target': 1 / 4096,
-        'dtype': dtype,
-        'device': device,
-    }
+    repo_id = "unsloth/Llama-3.2-1B-Instruct"
+    config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
+    weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
+
+    config = load_config(config_path, lr=lr, weight_decay=weight_decay, momentum=momentum, dtype=dtype, device=device)
 
     model = Model(**config)
+    load_model(model, weights_path)
+
     muon_params = [p for p in model.parameters() if p.ndim == 2]
     adam_params = [p for p in model.parameters() if p.ndim != 2]
 
