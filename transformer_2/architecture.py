@@ -8,8 +8,8 @@ import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
 
-def create_param(*shape, dtype=None, device=None):
-    param = nn.Parameter(torch.empty(*shape, device=device, dtype=dtype))
+def create_param(shape, dtype, device):
+    param = nn.Parameter(torch.empty(shape, device=device, dtype=dtype))
     param = nn.ParameterDict({'weight': param})
     return param
 
@@ -22,10 +22,11 @@ class RMSNorm(nn.Module):
         dtype = config['dtype']
         device = config['device']
         self.rms_norm_eps = rms_norm_eps
-        self.weight = create_param(hidden_size, dtype=dtype, device=device)
+        shape = (hidden_size,)
+        self.weight = create_param(shape, dtype, device)
 
     def forward(self, x):
-        var = x.pow(2).mean(dim=-1, keepdim=True)
+        var = x.pow(2).mean(-1, True)
         out = (x * torch.rsqrt(var + self.rms_norm_eps)) * self.weight.weight
         return out
 
@@ -54,23 +55,31 @@ class Attention(nn.Module):
         self.rope_theta = rope_theta
         self.device = device
 
-        self.q_proj = create_param(self.q_dim, hidden_size, dtype=dtype, device=device)
-        self.k_proj = create_param(expected_kv_dim, hidden_size, dtype=dtype, device=device)
-        self.v_proj = create_param(expected_kv_dim, hidden_size, dtype=dtype, device=device)
-        self.o_proj = create_param(hidden_size, self.q_dim, dtype=dtype, device=device)
+        q_shape = (self.q_dim, hidden_size)
+        kv_shape = (expected_kv_dim, hidden_size)
+        o_shape = (hidden_size, self.q_dim)
+
+        self.q_proj = create_param(q_shape, dtype, device)
+        self.k_proj = create_param(kv_shape, dtype, device)
+        self.v_proj = create_param(kv_shape, dtype, device)
+        self.o_proj = create_param(o_shape, dtype, device)
 
     def rope(self, x):
         batch_size, num_heads, seq_len, head_dim = x.shape
-        freq_exponents = torch.arange(0, self.head_dim, 2, device=self.device, dtype=torch.float32) / self.head_dim
+        step_val = 2
+        float32_dtype = torch.float32
+        freq_exponents = torch.arange(0, self.head_dim, step_val, device=self.device, dtype=float32_dtype) / self.head_dim
         theta = 1.0 / (self.rope_theta ** freq_exponents)
-        seq_idx = torch.arange(seq_len, device=self.device, dtype=torch.float32)
+        seq_idx = torch.arange(seq_len, device=self.device, dtype=float32_dtype)
         idx_theta = torch.outer(seq_idx, theta)
-        cos = torch.cat((idx_theta.cos(), idx_theta.cos()), dim=-1).to(dtype=x.dtype)
-        sin = torch.cat((idx_theta.sin(), idx_theta.sin()), dim=-1).to(dtype=x.dtype)
+        cos = torch.cat((idx_theta.cos(), idx_theta.cos()), -1).to(x.dtype)
+        sin = torch.cat((idx_theta.sin(), idx_theta.sin()), -1).to(x.dtype)
 
-        x1 = x[..., :self.head_dim // 2]
-        x2 = x[..., self.head_dim // 2:]
-        rotate_half = torch.cat((-x2, x1), dim=-1)
+        half_dim = self.head_dim // 2
+        x1 = x[..., :half_dim]
+        x2 = x[..., half_dim:]
+        neg_x2 = -x2
+        rotate_half = torch.cat((neg_x2, x1), -1)
         out = (x * cos) + (rotate_half * sin)
         return out
 
@@ -80,8 +89,9 @@ class Attention(nn.Module):
         q_gqa = q.view(batch_size, self.num_key_value_heads, n_rep, seq_len, self.head_dim)
         k_gqa = k.unsqueeze(2)
         v_gqa = v.unsqueeze(2)
-        out = F.scaled_dot_product_attention(q_gqa, k_gqa, v_gqa, is_causal=True)
-        out = out.reshape(batch_size, self.num_attention_heads, seq_len, self.head_dim)
+        is_causal = True
+        attn_out = F.scaled_dot_product_attention(q_gqa, k_gqa, v_gqa, None, 0.0, is_causal)
+        out = attn_out.reshape(batch_size, self.num_attention_heads, seq_len, self.head_dim)
         return out
 
     def forward(self, x):
@@ -107,9 +117,13 @@ class MLP(nn.Module):
         dtype = config['dtype']
         device = config['device']
 
-        self.gate_proj = create_param(intermediate_size, hidden_size, dtype=dtype, device=device)
-        self.up_proj = create_param(intermediate_size, hidden_size, dtype=dtype, device=device)
-        self.down_proj = create_param(hidden_size, intermediate_size, dtype=dtype, device=device)
+        gate_shape = (intermediate_size, hidden_size)
+        up_shape = (intermediate_size, hidden_size)
+        down_shape = (hidden_size, intermediate_size)
+
+        self.gate_proj = create_param(gate_shape, dtype, device)
+        self.up_proj = create_param(up_shape, dtype, device)
+        self.down_proj = create_param(down_shape, dtype, device)
 
     def forward(self, x):
         gate = F.linear(x, self.gate_proj.weight)
@@ -143,15 +157,17 @@ class Model(nn.Module):
         dtype = config['dtype']
         device = config['device']
 
+        embed_shape = (vocab_size, hidden_size)
+
         self.model = nn.ModuleDict({
-            'embed_tokens': create_param(vocab_size, hidden_size, dtype=dtype, device=device),
+            'embed_tokens': create_param(embed_shape, dtype, device),
             'norm': RMSNorm(**config),
-            'layers': nn.ModuleList(Block(**config) for _ in range(num_hidden_layers))
+            'layers': nn.ModuleList(Block(**config) for layer_idx in range(num_hidden_layers))
         })
         if tie_word_embeddings:
             self.lm_head = self.model['embed_tokens']
         else:
-            self.lm_head = create_param(vocab_size, hidden_size, dtype=dtype, device=device)
+            self.lm_head = create_param(embed_shape, dtype, device)
 
     def forward(self, inputs):
         x = self.model.embed_tokens.weight[inputs]
@@ -163,22 +179,26 @@ class Model(nn.Module):
 
     @torch.no_grad()
     def init_params(self):
+        std_val = 0.02
+        mean_val = 0.0
+        one_val = 1.0
         for p in self.parameters():
             if p.ndim > 1:
-                nn.init.normal_(p, mean=0.0, std=0.02)
+                nn.init.normal_(p, mean_val, std_val)
             else:
                 nn.init.ones_(p)
 
 
 class Adam(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
-        super().__init__(params, dict(
+    def __init__(self, params, lr, betas, eps, weight_decay):
+        defaults = dict(
             lr=lr,
             beta1=betas[0],
             beta2=betas[1],
             eps=eps,
             weight_decay=weight_decay,
-        ))
+        )
+        super().__init__(params, defaults)
 
     def step_param(self, p, group):
         if p.grad is None:
@@ -198,14 +218,17 @@ class Adam(torch.optim.Optimizer):
         t = state['step']
         exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
 
-        exp_avg.mul_(b1).add_(grad, alpha=1 - b1)
-        exp_avg_sq.mul_(b2).addcmul_(grad, grad, value=1 - b2)
+        alpha_val = 1 - b1
+        beta_val = 1 - b2
+        exp_avg.mul_(b1).add_(grad, alpha=alpha_val)
+        exp_avg_sq.mul_(b2).addcmul_(grad, grad, value=beta_val)
 
         step_size = lr * (math.sqrt(1 - b2 ** t) / (1 - b1 ** t))
         denom = exp_avg_sq.sqrt().add_(eps)
 
+        neg_step_size = -step_size
         p.mul_(1 - lr * wd)
-        p.addcdiv_(exp_avg, denom, value=-step_size)
+        p.addcdiv_(exp_avg, denom, value=neg_step_size)
 
     def step_group(self, group):
         for p in group['params']:
@@ -218,24 +241,26 @@ class Adam(torch.optim.Optimizer):
 
 
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5, adam_lr=1e-3, adam_betas=(0.9, 0.999), adam_eps=1e-8, adam_wd=0.01):
-        params = list(params)
-        muon_params = [p for p in params if p.ndim == 2]
-        adam_params = [p for p in params if p.ndim != 2]
-        super().__init__(muon_params, dict(
+    def __init__(self, params, lr, weight_decay, momentum, nesterov, eps, ns_steps, adam_lr, adam_betas, adam_eps, adam_wd):
+        params_list = list(params)
+        muon_params = [p for p in params_list if p.ndim == 2]
+        adam_params = [p for p in params_list if p.ndim != 2]
+        defaults = dict(
             lr=lr,
             weight_decay=weight_decay,
             momentum=momentum,
             nesterov=nesterov,
             eps=eps,
             ns_steps=ns_steps,
-        ))
-        self.adam = Adam(adam_params, lr=adam_lr, betas=adam_betas, eps=adam_eps, weight_decay=adam_wd)
+        )
+        super().__init__(muon_params, defaults)
+        self.adam = Adam(adam_params, adam_lr, adam_betas, adam_eps, adam_wd)
 
     def step_newton_schulz(self, update, a, b, c):
         g = update @ update.T
         g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
-        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
+        alpha_one = 1.0
+        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=alpha_one)
         return update_next
 
     def newton_schulz(self, grad, eps, steps):
@@ -244,7 +269,7 @@ class Muon(torch.optim.Optimizer):
         is_transposed = grad.size(0) > grad.size(1)
         if is_transposed:
             update = update.T
-        update.div_(update.norm().clamp(min=eps))
+        update.div_(update.norm().clamp(eps))
         for step_idx in range(steps):
             update = self.step_newton_schulz(update, a, b, c)
         if is_transposed:
@@ -265,12 +290,15 @@ class Muon(torch.optim.Optimizer):
         if 'buf' not in state:
             state['buf'] = torch.zeros_like(grad)
         buf = state['buf']
-        buf.lerp_(grad, 1 - mom)
+        mom_weight = 1 - mom
+        buf.lerp_(grad, mom_weight)
         update = grad.lerp(buf, mom) if nest else buf
         update = self.newton_schulz(update, eps, steps)
-        adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
+        ratio = max(1, p.shape[0] / p.shape[1])
+        adj_lr = lr * math.sqrt(ratio)
+        neg_adj_lr = -adj_lr
         p.mul_(1 - lr * wd)
-        p.add_(update, alpha=-adj_lr)
+        p.add_(update, alpha=neg_adj_lr)
 
     def step_group(self, group):
         for p in group['params']:
@@ -285,8 +313,9 @@ class Muon(torch.optim.Optimizer):
 
 def save_config(config, path):
     config_dict = {k: str(v) for k, v in config.items()}
+    indent_val = 2
     with open(path, 'w') as f:
-        json.dump(config_dict, f, indent=2)
+        json.dump(config_dict, f, indent=indent_val)
 
 
 def load_config(path):
@@ -300,7 +329,8 @@ def save_model(model, path):
 
 
 def load_model(model, path, device):
-    sd = load_safetensors(path, device=str(device))
+    dev_str = str(device)
+    sd = load_safetensors(path, dev_str)
     model_sd = model.state_dict()
     new_sd = {}
     for k, v in sd.items():
@@ -308,7 +338,8 @@ def load_model(model, path, device):
             new_sd[f"{k}.weight"] = v
         elif k in model_sd:
             new_sd[k] = v
-    model.load_state_dict(new_sd, strict=False)
+    strict_flag = False
+    model.load_state_dict(new_sd, strict_flag)
 
 
 def train_step(model, optimizer, inputs, targets):
@@ -323,27 +354,36 @@ def train_step(model, optimizer, inputs, targets):
 
 
 @torch.no_grad()
-def generate(model, tokenizer, prompt, max_new_tokens=30, temperature=0.0):
+def generate(model, tokenizer, prompt, max_new_tokens, temperature):
     device = next(model.parameters()).device
-    if isinstance(prompt, str):
-        messages = [{'role': 'user', 'content': prompt}]
-        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        input_ids = tokenizer.encode(formatted_prompt, return_tensors="pt").to(device=device)
-    else:
-        input_ids = prompt.to(device=device)
+    messages = [{'role': 'user', 'content': prompt}]
+    formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt_ids = tokenizer.encode(formatted_prompt)
+    prompt_tokens = torch.tensor([prompt_ids], device=device)
+    prompt_len = prompt_tokens.shape[1]
 
-    for _ in range(max_new_tokens):
-        logits = model(input_ids)
+    input_shape = (1, prompt_len + max_new_tokens)
+    long_dtype = torch.long
+    input_ids = torch.empty(input_shape, long_dtype, device)
+    input_ids[:, :prompt_len] = prompt_tokens
+
+    for step_idx in range(max_new_tokens):
+        current_len = prompt_len + step_idx
+        logits = model(input_ids[:, :current_len])
+        dim_val = -1
         if temperature <= 0.0:
-            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+            next_token = torch.argmax(logits[:, -1, :], dim_val)
         else:
             next_token_logits = logits[:, -1, :] / temperature
-            probs = F.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-        input_ids = torch.cat([input_ids, next_token], dim=-1)
+            probs = F.softmax(next_token_logits, dim_val)
+            num_samples_val = 1
+            next_token = torch.multinomial(probs, num_samples_val).squeeze(dim_val)
 
-    response_tokens = input_ids[0].tolist()
-    response_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
+        input_ids[0, current_len] = next_token
+
+    response_tokens = input_ids[0, prompt_len:].tolist()
+    skip_special_val = True
+    response_text = tokenizer.decode(response_tokens, skip_special_val)
     return response_text
 
 
@@ -358,8 +398,8 @@ def main():
     name = "Llama-3.2-1B-Instruct"
     repo_id = f"unsloth/{name}"
     
-    config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
-    weights_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
+    config_path = hf_hub_download(repo_id, "config.json")
+    weights_path = hf_hub_download(repo_id, "model.safetensors")
 
     config = load_config(config_path)
     config.update({
@@ -368,33 +408,48 @@ def main():
         'lr': 0.01,
         'weight_decay': 0.1,
         'momentum': 0.95,
+        'max_new_tokens': 40,
+        'temperature': 0.0,
         'config_path': config_path,
         'weights_path': weights_path,
     })
 
     model = Model(**config)
-    load_model(model, weights_path, device=device)
+    load_model(model, weights_path, device)
 
-    muon = Muon(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'], momentum=config['momentum'])
+    nesterov_val = True
+    eps_val = 1e-7
+    ns_steps_val = 5
+    betas_val = (0.9, 0.999)
+    adam_eps_val = 1e-8
+    muon = Muon(
+        model.parameters(),
+        config['lr'],
+        config['weight_decay'],
+        config['momentum'],
+        nesterov_val,
+        eps_val,
+        ns_steps_val,
+        config['lr'],
+        betas_val,
+        adam_eps_val,
+        config['weight_decay'],
+    )
     tokenizer = AutoTokenizer.from_pretrained(repo_id)
 
     prompt = "Explain how a transformer model uses multi-head self-attention to process text."
-    print(f"--- Inference BEFORE Training ---")
     print(f"Prompt: {prompt}")
-    response_before = generate(model, tokenizer, prompt, max_new_tokens=40)
+    response_before = generate(model, tokenizer, prompt, config['max_new_tokens'], config['temperature'])
     print(f"Response:\n{response_before}\n")
 
-    print(f"--- Running 1 Train Step ---")
     batch_size, seq_len = 2, 16
     vocab_size = config['vocab_size']
     inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
     targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
     loss_val = train_step(model, muon, inputs, targets)
-    print(f"Train loss: {loss_val:.4f}\n")
 
-    print(f"--- Inference AFTER Training ---")
-    response_after = generate(model, tokenizer, prompt, max_new_tokens=40)
+    response_after = generate(model, tokenizer, prompt, config['max_new_tokens'], config['temperature'])
     print(f"Response:\n{response_after}")
 
 
