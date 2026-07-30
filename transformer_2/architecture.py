@@ -16,14 +16,14 @@ class Muon(torch.optim.Optimizer):
             ns_steps=ns_steps,
         ))
 
-    def addmm(self, inp, mat1, mat2, beta=1, alpha=1):
+    def addmm(self, inp, mat1, mat2, beta, alpha):
         res = beta * inp + alpha * (mat1 @ mat2)
         return res
 
     def newton_schulz_step(self, upd, a, b, c):
         g = upd @ upd.T
-        g_upd = self.addmm(g, g, g, beta=b, alpha=c)
-        upd_next = self.addmm(upd, g_upd, upd, beta=a)
+        g_upd = self.addmm(g, g, g, b, c)
+        upd_next = self.addmm(upd, g_upd, upd, a, 1.0)
         return upd_next
 
     def newton_schulz(self, grad, eps, steps):
@@ -253,7 +253,7 @@ def main():
         'vocab_size': 512,
         'eps': 1 / 1024,
         'rope_theta': 10_000.0,
-        'muon_lr': 0.01,
+        'lr': 0.01,
         'momentum': 0.95,
         'weight_decay': 0.1,
         'loss_target': 1 / 4096,
