@@ -1,5 +1,4 @@
 import math
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -276,8 +275,6 @@ class Model(nn.Module):
         save_safetensors(self.state_dict(), path)
 
     def load(self, path, device=None):
-        if not os.path.exists(path):
-            return False
         dev = device or next(self.parameters()).device
         sd = load_safetensors(path, device=str(dev))
         
@@ -285,4 +282,3 @@ class Model(nn.Module):
             sd.pop("lm_head.weight")
             
         self.load_state_dict(sd, strict=False)
-        return True
