@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
-
 def create_param(shape, dtype, device):
     param = nn.Parameter(torch.empty(shape, device=device, dtype=dtype))
     param = nn.ParameterDict({'weight': param})
@@ -376,7 +375,6 @@ def generate(model, tokenizer, prompt, max_new_tokens, temperature):
             probs = F.softmax(next_token_logits, dim_val)
             num_samples_val = 1
             next_token = torch.multinomial(probs, num_samples_val).squeeze(dim_val)
-
         input_ids[0, current_len] = next_token
 
     response_tokens = input_ids[0, prompt_len:].tolist()
@@ -397,6 +395,14 @@ def main():
     config_path = hf_hub_download(repo_id, "config.json")
     weights_path = hf_hub_download(repo_id, "model.safetensors")
 
+    max_new_tokens = 128
+    temperature = 0.0
+    nesterov_val = True
+    eps_val = 1e-7
+    ns_steps_val = 5
+    betas_val = (0.9, 0.999)
+    adam_eps_val = 1e-8
+
     config = load_config(config_path)
     config.update({
         'device': device,
@@ -404,8 +410,8 @@ def main():
         'lr': 0.01,
         'weight_decay': 0.1,
         'momentum': 0.95,
-        'max_new_tokens': 128,
-        'temperature': 0.0,
+        'max_new_tokens': max_new_tokens,
+        'temperature': temperature,
         'config_path': config_path,
         'weights_path': weights_path,
     })
@@ -413,11 +419,6 @@ def main():
     model = Model(**config)
     load_model(model, weights_path, device)
 
-    nesterov_val = True
-    eps_val = 1e-7
-    ns_steps_val = 5
-    betas_val = (0.9, 0.999)
-    adam_eps_val = 1e-8
     muon = Muon(
         model.parameters(),
         config['lr'],
@@ -435,16 +436,8 @@ def main():
 
     prompt = "Explain how a transformer model uses multi-head self-attention to process text."
     print(f"Prompt: {prompt}")
-    response_before = generate(model, tokenizer, prompt, config['max_new_tokens'], config['temperature'])
+    response_before = generate(model, tokenizer, prompt, max_new_tokens, temperature)
     print(f"Response:\n{response_before}\n")
-
-    batch_size, seq_len = 2, 128
-    vocab_size = config['vocab_size']
-    inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-    targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-
-    loss_val = train_step(model, muon, inputs, targets)
-    print(f"Loss: {loss_val}")
 
 
 if __name__ == "__main__":
