@@ -55,7 +55,8 @@ class Attention(nn.Module):
 
     def rope(self, x):
         seq_len = x.shape[-2]
-        theta = 1.0 / (self.rope_theta ** (torch.arange(0, self.head_dim, 2, device=x.device, dtype=torch.float32) / self.head_dim))
+        freq_exponents = torch.arange(0, self.head_dim, 2, device=x.device, dtype=torch.float32) / self.head_dim
+        theta = 1.0 / (self.rope_theta ** freq_exponents)
         seq_idx = torch.arange(seq_len, device=x.device, dtype=torch.float32)
         idx_theta = torch.outer(seq_idx, theta)
         cos = idx_theta.cos()
