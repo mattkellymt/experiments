@@ -5,69 +5,6 @@ import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
 
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5):
-        super().__init__(params, dict(
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=momentum,
-            nesterov=nesterov,
-            eps=eps,
-            ns_steps=ns_steps,
-        ))
-
-    def step_newton_schulz(self, update, a, b, c):
-        g = update @ update.T
-        g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
-        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
-        return update_next
-
-    def newton_schulz(self, grad, eps, steps):
-        a, b, c = 3.4445, -4.7750, 2.0315
-        update = grad.bfloat16()
-        is_transposed = grad.size(0) > grad.size(1)
-        if is_transposed:
-            update = update.T
-        update.div_(update.norm().clamp(min=eps))
-        for step_idx in range(steps):
-            update = self.step_newton_schulz(update, a, b, c)
-        if is_transposed:
-            update = update.T
-        return update
-
-    def step_param(self, p, group):
-        if p.ndim != 2:
-            raise ValueError("Muon only supports 2D parameters")
-        if p.grad is None:
-            return
-        lr = group['lr']
-        wd = group['weight_decay']
-        mom = group['momentum']
-        nest = group['nesterov']
-        eps = group['eps']
-        steps = group['ns_steps']
-        grad = p.grad
-        state = self.state[p]
-        if 'buf' not in state:
-            state['buf'] = torch.zeros_like(grad)
-        buf = state['buf']
-        buf.lerp_(grad, 1 - mom)
-        update = grad.lerp(buf, mom) if nest else buf
-        update = self.newton_schulz(update, eps, steps)
-        adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
-        p.mul_(1 - lr * wd)
-        p.add_(update, alpha=-adj_lr)
-
-    def step_group(self, group):
-        for p in group['params']:
-            self.step_param(p, group)
-
-    @torch.no_grad()
-    def step(self):
-        for group in self.param_groups:
-            self.step_group(group)
-
-
 def create_param(*shape):
     param = nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape))})
     return param
@@ -226,6 +163,69 @@ class Model(nn.Module):
         self.load_state_dict(sd, strict=False)
 
 
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, weight_decay=0.1, momentum=0.95, nesterov=True, eps=1e-7, ns_steps=5):
+        super().__init__(params, dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=nesterov,
+            eps=eps,
+            ns_steps=ns_steps,
+        ))
+
+    def step_newton_schulz(self, update, a, b, c):
+        g = update @ update.T
+        g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
+        update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
+        return update_next
+
+    def newton_schulz(self, grad, eps, steps):
+        a, b, c = 3.4445, -4.7750, 2.0315
+        update = grad.bfloat16()
+        is_transposed = grad.size(0) > grad.size(1)
+        if is_transposed:
+            update = update.T
+        update.div_(update.norm().clamp(min=eps))
+        for step_idx in range(steps):
+            update = self.step_newton_schulz(update, a, b, c)
+        if is_transposed:
+            update = update.T
+        return update
+
+    def step_param(self, p, group):
+        if p.ndim != 2:
+            raise ValueError("Muon only supports 2D parameters")
+        if p.grad is None:
+            return
+        lr = group['lr']
+        wd = group['weight_decay']
+        mom = group['momentum']
+        nest = group['nesterov']
+        eps = group['eps']
+        steps = group['ns_steps']
+        grad = p.grad
+        state = self.state[p]
+        if 'buf' not in state:
+            state['buf'] = torch.zeros_like(grad)
+        buf = state['buf']
+        buf.lerp_(grad, 1 - mom)
+        update = grad.lerp(buf, mom) if nest else buf
+        update = self.newton_schulz(update, eps, steps)
+        adj_lr = lr * math.sqrt(max(1, p.shape[0] / p.shape[1]))
+        p.mul_(1 - lr * wd)
+        p.add_(update, alpha=-adj_lr)
+
+    def step_group(self, group):
+        for p in group['params']:
+            self.step_param(p, group)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            self.step_group(group)
+
+
 def main():
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -235,6 +235,9 @@ def main():
         device = torch.device("cpu")
 
     dtype = torch.bfloat16
+    lr = 0.01
+    weight_decay = 0.1
+    momentum = 0.95
 
     config = {
         'n_layers': 2,
@@ -249,15 +252,17 @@ def main():
         'vocab_size': 512,
         'eps': 1 / 1024,
         'rope_theta': 10_000.0,
-        'lr': 0.01,
-        'momentum': 0.95,
-        'weight_decay': 0.1,
+        'lr': lr,
+        'momentum': momentum,
+        'weight_decay': weight_decay,
         'loss_target': 1 / 4096,
         'dtype': dtype,
         'device': device,
     }
 
     model = Model(**config).to(device=device, dtype=dtype)
+    muon_params = [p for p in model.parameters() if p.ndim == 2]
+    optimizer = Muon(muon_params, lr=lr, weight_decay=weight_decay, momentum=momentum)
 
 
 if __name__ == "__main__":
