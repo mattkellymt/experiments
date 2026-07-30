@@ -16,7 +16,7 @@ class Muon(torch.optim.Optimizer):
             ns_steps=ns_steps,
         ))
 
-    def newton_schulz_step(self, update, a, b, c):
+    def step_newton_schulz(self, update, a, b, c):
         g = update @ update.T
         g_upd = torch.addmm(g, g, g, beta=b, alpha=c)
         update_next = torch.addmm(update, g_upd, update, beta=a, alpha=1.0)
@@ -30,7 +30,7 @@ class Muon(torch.optim.Optimizer):
             update = update.T
         update.div_(update.norm().clamp(min=eps))
         for step_idx in range(steps):
-            update = self.newton_schulz_step(update, a, b, c)
+            update = self.step_newton_schulz(update, a, b, c)
         if is_transposed:
             update = update.T
         return update
