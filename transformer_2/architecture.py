@@ -359,12 +359,9 @@ def generate(model, tokenizer, prompt, max_new_tokens, temperature):
     messages = [{'role': 'user', 'content': prompt}]
     formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     prompt_ids = tokenizer.encode(formatted_prompt)
-    prompt_tokens = torch.tensor([prompt_ids], device=device)
     prompt_len = prompt_tokens.shape[1]
-
     input_shape = (1, prompt_len + max_new_tokens)
-    long_dtype = torch.long
-    input_ids = torch.empty(input_shape, long_dtype, device)
+    input_ids = torch.empty(input_shape, dtype=torch.long, device=device)
     input_ids[:, :prompt_len] = prompt_tokens
 
     for step_idx in range(max_new_tokens):
