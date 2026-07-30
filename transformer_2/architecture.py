@@ -278,14 +278,9 @@ class Adam(torch.optim.Optimizer):
 
 
 def save_config(config, path):
-    serializable = {}
-    for k, v in config.items():
-        if isinstance(v, (torch.device, torch.dtype)):
-            serializable[k] = str(v)
-        else:
-            serializable[k] = v
+    config_dict = {k: str(v) for k, v in config.items()}
     with open(path, 'w') as f:
-        json.dump(serializable, f, indent=2)
+        json.dump(config_dict, f, indent=2)
 
 
 def load_config(path, **extra_settings):
