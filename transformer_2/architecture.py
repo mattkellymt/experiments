@@ -444,9 +444,7 @@ def main():
     targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
     loss_val = train_step(model, muon, inputs, targets)
-
-    response_after = generate(model, tokenizer, prompt, config['max_new_tokens'], config['temperature'])
-    print(f"Response:\n{response_after}")
+    print(f"Loss: {loss_val}")
 
 
 if __name__ == "__main__":
