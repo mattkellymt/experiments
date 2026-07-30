@@ -1,4 +1,3 @@
-import json
 import math
 import os
 import torch
@@ -275,9 +274,6 @@ class Model(nn.Module):
 
     def save(self, path):
         save_safetensors(self.state_dict(), path)
-        config_path = path.rsplit('.', 1)[0] + ".json"
-        with open(config_path, "w") as f:
-            json.dump(self.config, f, indent=2)
 
     def load(self, path, device=None):
         if not os.path.exists(path):
@@ -289,9 +285,4 @@ class Model(nn.Module):
             sd.pop("lm_head.weight")
             
         self.load_state_dict(sd, strict=False)
-
-        config_path = path.rsplit('.', 1)[0] + ".json"
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                self.config = json.load(f)
         return True
