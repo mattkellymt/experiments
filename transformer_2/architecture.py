@@ -273,16 +273,14 @@ class Model(nn.Module):
                 else:
                     nn.init.ones_(p)
 
-    def save(self, path=None):
-        path = "llama3_2_1b.safetensors" if path is None else path
+    def save(self, path):
         save_safetensors(self.state_dict(), path)
         config_path = path.rsplit('.', 1)[0] + ".json"
         with open(config_path, "w") as f:
             json.dump(self.config, f, indent=2)
         print(f"Saved model to '{path}' and config to '{config_path}'.")
 
-    def load(self, path=None, device=None):
-        path = "llama3_2_1b.safetensors" if path is None else path
+    def load(self, path, device=None):
         if not os.path.exists(path):
             return False
         dev = device or next(self.parameters()).device
