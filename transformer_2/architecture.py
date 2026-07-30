@@ -75,8 +75,10 @@ def create_param(*shape):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, vocab_dim, eps, **kwargs):
+    def __init__(self, **config):
         super().__init__()
+        vocab_dim = config['vocab_dim']
+        eps = config['eps']
         self.eps = eps
         self.weight = nn.Parameter(torch.empty(vocab_dim))
 
@@ -86,8 +88,15 @@ class RMSNorm(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, vocab_dim, kv_dim, n_heads, n_kv_heads, head_dim, rope_theta, seq_len, **kwargs):
+    def __init__(self, **config):
         super().__init__()
+        vocab_dim = config['vocab_dim']
+        kv_dim = config['kv_dim']
+        n_heads = config['n_heads']
+        n_kv_heads = config['n_kv_heads']
+        head_dim = config['head_dim']
+        rope_theta = config['rope_theta']
+
         if n_heads % n_kv_heads != 0:
             raise ValueError("n_heads must be divisible by n_kv_heads")
         if head_dim % 2 != 0:
@@ -100,13 +109,7 @@ class Attention(nn.Module):
         self.head_dim = head_dim
         self.n_kv_heads = n_kv_heads
         self.q_dim = n_heads * head_dim
-
-        theta = 1.0 / (rope_theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
-        seq_idx = torch.arange(seq_len, dtype=torch.float32)
-        idx_theta = torch.outer(seq_idx, theta)
-
-        self.register_buffer('rope_cos', idx_theta.cos(), persistent=False)
-        self.register_buffer('rope_sin', idx_theta.sin(), persistent=False)
+        self.rope_theta = rope_theta
 
         self.q_proj = create_param(vocab_dim, self.q_dim)
         self.k_proj = create_param(vocab_dim, expected_kv_dim)
@@ -115,10 +118,12 @@ class Attention(nn.Module):
 
     def rope(self, x):
         seq_len = x.shape[-2]
-        if seq_len > self.rope_cos.shape[0]:
-            raise ValueError("input sequence length exceeds configured seq_len")
-        cos = self.rope_cos[:seq_len]
-        sin = self.rope_sin[:seq_len]
+        theta = 1.0 / (self.rope_theta ** (torch.arange(0, self.head_dim, 2, device=x.device, dtype=torch.float32) / self.head_dim))
+        seq_idx = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        idx_theta = torch.outer(seq_idx, theta)
+        cos = idx_theta.cos()
+        sin = idx_theta.sin()
+
         x_even, x_odd = x[..., 0::2], x[..., 1::2]
         out = torch.empty_like(x)
         out[..., 0::2] = x_even * cos - x_odd * sin
@@ -149,8 +154,10 @@ class Attention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, vocab_dim, hidden_dim, **kwargs):
+    def __init__(self, **config):
         super().__init__()
+        vocab_dim = config['vocab_dim']
+        hidden_dim = config['hidden_dim']
         self.gate_proj = create_param(vocab_dim, hidden_dim)
         self.up_proj = create_param(vocab_dim, hidden_dim)
         self.down_proj = create_param(hidden_dim, vocab_dim)
@@ -162,12 +169,12 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, **kwargs):
+    def __init__(self, **config):
         super().__init__()
-        self.input_layernorm = RMSNorm(**kwargs)
-        self.self_attn = Attention(**kwargs)
-        self.post_attention_layernorm = RMSNorm(**kwargs)
-        self.mlp = MLP(**kwargs)
+        self.input_layernorm = RMSNorm(**config)
+        self.self_attn = Attention(**config)
+        self.post_attention_layernorm = RMSNorm(**config)
+        self.mlp = MLP(**config)
 
     def forward(self, x):
         x = x + self.self_attn(self.input_layernorm(x))
