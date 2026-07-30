@@ -277,8 +277,4 @@ class Model(nn.Module):
     def load(self, path, device=None):
         dev = device or next(self.parameters()).device
         sd = load_safetensors(path, device=str(dev))
-        
-        if "lm_head.weight" in sd:
-            sd.pop("lm_head.weight")
-            
         self.load_state_dict(sd, strict=False)
