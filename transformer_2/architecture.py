@@ -263,13 +263,13 @@ class Model(nn.Module):
             return logits, new_past_key_values
         return logits
 
+    @torch.no_grad()
     def init_params(self):
-        with torch.no_grad():
-            for p in self.parameters():
-                if p.ndim > 1:
-                    nn.init.normal_(p, mean=0.0, std=0.02)
-                else:
-                    nn.init.ones_(p)
+        for p in self.parameters():
+            if p.ndim > 1:
+                nn.init.normal_(p, mean=0.0, std=0.02)
+            else:
+                nn.init.ones_(p)
 
     def save(self, path):
         save_safetensors(self.state_dict(), path)
