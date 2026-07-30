@@ -125,6 +125,15 @@ class Attention(nn.Module):
         out[..., 1::2] = x_even * sin + x_odd * cos
         return out
 
+    def gqa(self, q, k, v):
+        batch_size, num_heads, seq_len, head_dim = q.shape
+        n_rep = self.n_heads // self.n_kv_heads
+        q_gqa = q.view(batch_size, self.n_kv_heads, n_rep, seq_len, self.head_dim)
+        k_gqa = k.unsqueeze(2)
+        v_gqa = v.unsqueeze(2)
+        out = F.scaled_dot_product_attention(q_gqa, k_gqa, v_gqa, is_causal=True)
+        return out.reshape(batch_size, self.n_heads, seq_len, self.head_dim)
+
     def forward(self, x):
         b, s, d = x.shape
         q = torch.matmul(x, self.q_proj.weight).reshape(b, s, self.n_heads, self.head_dim).transpose(1, 2)
@@ -134,11 +143,7 @@ class Attention(nn.Module):
         q = self.rope(q)
         k = self.rope(k)
 
-        n_rep = self.n_heads // self.n_kv_heads
-        k = k.repeat_interleave(n_rep, dim=1)
-        v = v.repeat_interleave(n_rep, dim=1)
-
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        out = self.gqa(q, k, v)
         out = out.transpose(1, 2).reshape(b, s, self.q_dim)
         return torch.matmul(out, self.o_proj.weight)
 
