@@ -278,7 +278,6 @@ class Model(nn.Module):
         config_path = path.rsplit('.', 1)[0] + ".json"
         with open(config_path, "w") as f:
             json.dump(self.config, f, indent=2)
-        print(f"Saved model to '{path}' and config to '{config_path}'.")
 
     def load(self, path, device=None):
         if not os.path.exists(path):
@@ -295,5 +294,4 @@ class Model(nn.Module):
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 self.config = json.load(f)
-        print(f"Loaded checkpoint from '{path}' onto {dev}.")
         return True
