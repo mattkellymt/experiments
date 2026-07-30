@@ -404,7 +404,7 @@ def main():
         'lr': 0.01,
         'weight_decay': 0.1,
         'momentum': 0.95,
-        'max_new_tokens': 40,
+        'max_new_tokens': 128,
         'temperature': 0.0,
         'config_path': config_path,
         'weights_path': weights_path,
@@ -438,7 +438,7 @@ def main():
     response_before = generate(model, tokenizer, prompt, config['max_new_tokens'], config['temperature'])
     print(f"Response:\n{response_before}\n")
 
-    batch_size, seq_len = 2, 16
+    batch_size, seq_len = 2, 128
     vocab_size = config['vocab_size']
     inputs = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
     targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
