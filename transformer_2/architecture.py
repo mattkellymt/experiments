@@ -6,9 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
 
-# ==========================================
-# 1. Custom Muon Optimizer
-# ==========================================
 
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=None, weight_decay=None, momentum=None, nesterov=None, eps=None, ns_steps=None):
@@ -83,10 +80,6 @@ class Muon(torch.optim.Optimizer):
             self.step_group(group)
 
 
-# ==========================================
-# 2. Transparent Transformer Components
-# ==========================================
-
 def create_param(*shape):
     return nn.ParameterDict({'weight': nn.Parameter(torch.empty(*shape))})
 
@@ -140,8 +133,8 @@ class RoPE(nn.Module):
         self.register_buffer('sin', emb.sin(), persistent=False)
 
     def forward(self, position_ids):
-        cos = self.cos[position_ids].unsqueeze(2) # [B, S, 1, head_dim]
-        sin = self.sin[position_ids].unsqueeze(2) # [B, S, 1, head_dim]
+        cos = self.cos[position_ids].unsqueeze(2)
+        sin = self.sin[position_ids].unsqueeze(2)
         return cos, sin
 
 
@@ -194,7 +187,6 @@ class Attention(nn.Module):
         s_total = k.shape[2]
         n_rep = self.n_heads // self.n_kv_heads
         
-        # Zero-allocation GQA routing for SDPA
         q_gqa = q.view(b, self.n_kv_heads, n_rep, s, self.head_dim)
         k_gqa = k.unsqueeze(2)
         v_gqa = v.unsqueeze(2)
@@ -207,7 +199,6 @@ class Attention(nn.Module):
         
         out = out.reshape(b, self.n_heads, s, self.head_dim).transpose(1, 2).reshape(b, s, self.q_dim)
         return torch.matmul(out, self.o_proj.weight), new_kv
-
 
 
 class MLP(nn.Module):
@@ -252,7 +243,6 @@ class Model(nn.Module):
             'norm': RMSNorm(**config),
             'layers': nn.ModuleList(Block(**config) for _ in range(n_layers))
         })
-        # Note: lm_head is tied to embed_tokens.weight
 
     def forward(self, inputs, position_ids=None, attention_mask=None, past_key_values=None, use_cache=False):
         b, s = inputs.shape
@@ -298,7 +288,6 @@ class Model(nn.Module):
         dev = device or next(self.parameters()).device
         sd = load_safetensors(path, device=str(dev))
         
-        # Handle tied weights from safetensors correctly
         if "lm_head.weight" in sd:
             sd.pop("lm_head.weight")
             
