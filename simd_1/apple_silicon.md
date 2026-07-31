@@ -1,6 +1,6 @@
 # Apple Silicon M4 Pro: Empirical GPU Optimization Guide
 
-This whitepaper details an empirical, black-box reverse-engineering study of Apple Silicon's GPU performance (specifically the M4 Pro chip with 16 GPU Cores and 24GB Unified Memory). Because Apple's low-level architectural details are proprietary, this study focuses strictly on observable software and hardware behaviors under heavily controlled conditions, avoiding definitive causal claims where competing hypotheses exist.
+This whitepaper details an empirical, black-box reverse-engineering study of Apple Silicon's GPU performance.
 
 ## 1. Core ML Feasibility & API Overhead
 
@@ -15,15 +15,15 @@ We first investigated the feasibility of using Core ML via `coremltools` for sub
 The Core ML prediction API overhead is massive for isolated matrix math. Explicitly targeting the GPU via `CPU_AND_GPU` performed worse than `CPU_ONLY`. This overhead (cache syncs, dispatch translation, metal command buffering) functionally cripples the hardware. 
 While `CPU_AND_NE` was the fastest, this merely indicates the *scheduler allowed* Neural Engine usage; it does not definitively prove the ANE executed the pure matmul isolated from the CPU's AMX coprocessor. Because Core ML enforces static graph compilation and abstracts low-level dispatch, it was abandoned in favor of PyTorch MPS and Apple MLX for granular dimension sweeping.
 
-## 2. Advanced Matrix Dimension Sweeps
+## 2. Matrix Dimension Sweeps
 
 We executed a massive parameter sweep, independently modifying the $M$, $N$, and $K$ dimensions of the GEMM operation.
 
 *   **1D Sweeps**: High-resolution (step size = 1) sweeps holding two dimensions at 2048 and extending the third to 2560.
 *   **2D Sweeps**: Bivariate grids (step size = 4) comparing $M \times N$, $M \times K$, and $N \times K$ across a 256-element range.
 
-![1D Sweeps](./advanced_1d.png)
-![2D Sweeps](./advanced_2d.png)
+See Cache 1D
+See Cache 2D
 
 ### Key Observations & Competing Hypotheses
 1.  **Framework Uniformity**: MLX demonstrates profoundly smoother, more uniform execution latencies than PyTorch MPS across virtually all unaligned shapes.
@@ -37,7 +37,7 @@ We executed a massive parameter sweep, independently modifying the $M$, $N$, and
 To prove that the observed cache penalties were structural to the matrix shape and not temporal artifacts (e.g., thermal throttling, OS scheduling), we executed a highly rigorous interleaved determinism study.
 We extracted the top 5 fastest ("Cold"), top 5 slowest ("Hot"), and 5 median ("Median") shape configurations. We interleaved and randomized 150 executions per shape to eliminate temporal bias.
 
-![Determinism Distributions](./determinism_plot.png)
+See Determinism Distributions
 
 ### Results
 The distributions are phenomenally tight. 
@@ -52,5 +52,3 @@ When optimizing workloads for the M4 Pro GPU:
 1.  **Framework Choice**: MLX is demonstrably superior at handling arbitrary, unaligned matrix dimensions compared to PyTorch MPS.
 2.  **Alignment**: If using PyTorch MPS, developers must rigorously pad operations to multiples of 32 or 64 to avoid triggering severely unoptimized fallback kernels or catastrophic cache penalties.
 3.  **Performance Metrics**: When evaluating Apple Silicon throughput, GEMM math complexity must be calculated as $(2 \times M \times N \times K)$ to accurately convert latency into true TFLOP/s or ps/FLOP.
-
-*Good science is less about answering every question than about asking the next one well. The foundational behavior of Apple's unified memory architecture is now quantified; discovering the exact compiler heuristics governing it is the next frontier.*
