@@ -54,8 +54,24 @@ Assuming $N$ data points in $d$-dimensional hidden space:
 | **$4.0\times$** | $> +5\sigma$ | **$> 99.99999\%$** | Standard in modern Transformer FFNs ($d_{ffn} = 4 \times d_{model}$). |
 | **$8\times$** | Massive overkill | **$1.0 - \epsilon$** | Diminishing returns on separability; used only when raw capacity/memory storage is needed. |
 
-If $2\times$ gets you to $\sim 99\%$ separability, why do modern models (like Transformers, SwiGLU, and MLPs) expand by **$4\times$** in their feed-forward layers?
+## SwiGLU
+The classic $4 \times d_{model}$ rule was designed for the standard Feed-Forward Network (FFN) layout using activations like ReLU or GELU. [1] 
+However, almost all popular open models today (like Meta's Llama 3, Mistral, and Qwen) use an architectural upgrade called SwiGLU (Gated Linear Units). Because SwiGLU splits the up-projection into two separate matrices ($W_{gate}$ and $W_{up}$), it is mathematically more expressive. To prevent the model from becoming bloated with too many parameters, researchers scaled down the intermediate dimension factor. [2] 
+## The Actual Ratios in Popular Ollama Models
+Instead of a clean 4x multiplier, modern open models calculate their intermediate FFN dimension ($d_{ffn}$) using a formula like:
+$$d_{ffn} \approx \frac{8}{3} \times d_{model} \approx 2.67 \times d_{model}$$ 
+Here is exactly how the math breaks down for the most popular models you pull on [Ollama](https://ollama.com/blog/vision-models): [3] 
 
-1. **Real Data Is Not Random:** Cover's theorem assumes data is distributed in "general position" (randomly scattered). Real-world data lies on tight, highly curved manifolds. To untangle real-world manifolds, you need extra head room above the theoretical random baseline.
-2. **Memorization & Capacity:** As shown by MacKay, the capacity limit of a perceptron is $2d$ items. Expanding to $4\times$ gives the network enough room to untangle multiple overlapping features *simultaneously* without them interfering with one another.
-3. **The "Squeeze" (Linear Bottlenecks):** When you project back down (e.g., $4d \to d$), the network compresses the now-linearly-separated representations back into a dense space for the next layer to consume.
+* Llama 3 / 3.1 / 3.2 (8B):
+* Hidden size ($d_{model}$): 4,096
+   * FFN size ($d_{ffn}$): 14,336
+   * Actual Ratio: ~3.5x [4] 
+* Llama 3 (70B):
+* Hidden size ($d_{model}$): 8,192
+   * FFN size ($d_{ffn}$): 28,672
+   * Actual Ratio: ~3.5x
+* Mistral (7B) & Qwen 2.5 (7B):
+* Hidden size ($d_{model}$): 4,096
+   * FFN size ($d_{ffn}$): 11,008
+   * Actual Ratio: ~2.68x (The exact $\frac{8}{3}$ ratio) [1] 
+
