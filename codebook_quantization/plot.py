@@ -41,17 +41,6 @@ def main():
     with torch.no_grad():
         y_fp4 = m_fp4(x_test).float()
 
-    # Load K=128 Codebook Model
-    cb128_path = os.path.join(script_dir, "model_codebook_7bit.pt")
-    m_cb128 = RotationModel(dim=256, hidden_dim=1024).to(device)
-    for name, child in m_fp32.named_children():
-        if isinstance(child, nn.Linear):
-            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=128).to(device)
-            setattr(m_cb128, name, cb_layer)
-
-    m_cb128.load_state_dict(torch.load(cb128_path, weights_only=True))
-    m_cb128.eval()
-
     # Load K=256 Codebook Model
     cb256_path = os.path.join(script_dir, "model_codebook_8bit.pt")
     m_cb256 = RotationModel(dim=256, hidden_dim=1024).to(device)
@@ -63,14 +52,25 @@ def main():
     m_cb256.load_state_dict(torch.load(cb256_path, weights_only=True))
     m_cb256.eval()
 
+    # Load K=512 Codebook Model
+    cb512_path = os.path.join(script_dir, "model_codebook_9bit.pt")
+    m_cb512 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    for name, child in m_fp32.named_children():
+        if isinstance(child, nn.Linear):
+            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=512).to(device)
+            setattr(m_cb512, name, cb_layer)
+
+    m_cb512.load_state_dict(torch.load(cb512_path, weights_only=True))
+    m_cb512.eval()
+
     with torch.no_grad():
-        y_cb128 = evaluate_codebook_model(m_cb128, x_test, hard=True).float()
         y_cb256 = evaluate_codebook_model(m_cb256, x_test, hard=True).float()
+        y_cb512 = evaluate_codebook_model(m_cb512, x_test, hard=True).float()
 
     variants = [
         ("TorchAO Native FP4 (1.41 MB)", y_fp4, "#d62728"),
-        ("Codebook K=128 (7-bit, 0.19 MB)", y_cb128, "#1f77b4"),
-        ("Codebook K=256 (8-bit, 0.20 MB)", y_cb256, "#2ca02c"),
+        ("Codebook K=256 (8-bit, 0.20 MB)", y_cb256, "#1f77b4"),
+        ("Codebook K=512 (9-bit, 0.21 MB)", y_cb512, "#2ca02c"),
     ]
 
     data = {}
@@ -91,7 +91,7 @@ def main():
     # -------------------------------------------------------------
     # ROW 1: SCATTER PLOTS
     # -------------------------------------------------------------
-    # Panel 1 (Row 1 Left): TorchAO FP4 vs Codebook K=128 vs Codebook K=256 Scatter
+    # Panel 1 (Row 1 Left): TorchAO FP4 vs Codebook K=256 vs Codebook K=512 Scatter
     ax1 = axes[0, 0]
     for label, d in data.items():
         ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
@@ -99,7 +99,7 @@ def main():
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. K=128 & K=256 Codebooks", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. K=256 & K=512 Codebooks", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
