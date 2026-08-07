@@ -1,14 +1,14 @@
-# Clean Shaded Envelope & Residual Standard Deviation Analysis Across 1,024 Trials
+# Massive $65,536$-Trial Shaded Envelope & Residual Standard Deviation Analysis
 
-## 1. Experimental Methodology ($M=1024$ Trials $\times N=2000$ Samples)
+## 1. Experimental Methodology ($M=65536 = 2^{16}$ Trials $\times N=2000$ Samples)
 
-To visualize sample bounds cleanly without cluttering the plot with individual trial lines, we used **`plt.fill_between()`** to render a translucent shaded Min-Max bounding band across all 1,024 independent random sample trials:
+To achieve maximum statistical convergence, we executed **$M=65536$ ($2^{16}$) independent random sample trials** ($1.31072 \times 10^8$ total data points). We rendered a translucent shaded Min-Max bounding envelope across all 65,536 trials:
 
-$$\text{Min-Max Shaded Envelope}(x) = \left[ \min_{m=1 \dots 1024} y_{\text{sample}}^{(m)}(x), \quad \max_{m=1 \dots 1024} y_{\text{sample}}^{(m)}(x) \right]$$
+$$\text{Min-Max Shaded Envelope}(x) = \left[ \min_{m=1 \dots 65536} y_{\text{sample}}^{(m)}(x), \quad \max_{m=1 \dots 65536} y_{\text{sample}}^{(m)}(x) \right]$$
 
-For each grid point $x_j$, we also computed the **Residual Standard Deviation** $\sigma_{\text{res}}(x_j)$ across all 1,024 trials and plotted it as a solid line matching each pane's color theme on a **secondary right-hand Y-axis**:
+For each grid point $x_j$, we computed the **Residual Standard Deviation** $\sigma_{\text{res}}(x_j)$ across all 65,536 trials and plotted it as a solid line matching each pane's color theme on a **secondary right-hand Y-axis**:
 
-$$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 1024} \left( \text{residual}_m(x_j) \right)$$
+$$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 65536} \left( \text{residual}_m(x_j) \right)$$
 
 ---
 
@@ -37,14 +37,14 @@ $$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 1024} \left( \text{residual}_
 
 ![Visual Summary Plot](plot.png)
 
-- **Shaded Color Band:** Ultra-clean sample bounds showing the full extent of sample variation across 1,024 trials.
-- **Solid Black Line:** True ideal function across all 4 panels.
-- **Solid Color Line (Right Y-Axis):** Residual Standard Deviation $\sigma_{\text{res}}(x)$ tracking cross-trial variance.
+- **Shaded Color Band:** Global Min-Max sample bounds across 65,536 trials ($1.31072 \times 10^8$ total data points).
+- **Solid Black Line:** True ideal reference function across all 4 panels.
+- **Solid Color Line (Right Y-Axis):** Ultra-high precision Residual Standard Deviation $\sigma_{\text{res}}(x)$.
 
 ---
 
 ## Files
 
 - [`run.py`](run.py) — Entrypoint Python script
-- [`plot.png`](plot.png) — Clean shaded envelope dual Y-axis 2x2 graphic
+- [`plot.png`](plot.png) — 65,536-trial dual Y-axis 2x2 graphic
 - [`README.md`](README.md) — Documentation report

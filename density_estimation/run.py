@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import numpy as np
 import scipy.stats as stats
@@ -27,61 +28,99 @@ def cdf_to_integral_algebraic(y_cdf, f_pdf, sigma):
     cdf_integral = (sigma * np.sqrt(2.0) * z) * y_cdf + (sigma ** 2) * f_pdf
     return cdf_integral
 
-def generate_samples(num_samples=2000, mean=1.5, std=2.0, seed=42):
-    np.random.seed(seed)
-    samples = np.random.normal(loc=mean, scale=std, size=num_samples)
-    return np.sort(samples)
-
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_plot_path = os.path.join(script_dir, "plot.png")
     
     N = 2000
-    M = 1024  # 1024 independent random sample trials
+    M = 65536  # 2^16 = 65,536 independent random sample trials
     true_mean, true_std = 1.5, 2.0
     
-    x_grid = np.linspace(-4.0, 7.0, 1000)
+    x_grid = np.linspace(-4.0, 7.0, 500)
+    num_grid = len(x_grid)
     
     cdf_ideal = stats.norm.cdf(x_grid, loc=true_mean, scale=true_std)
     pdf_ideal = stats.norm.pdf(x_grid, loc=true_mean, scale=true_std)
     pdf_deriv_ideal = -((x_grid - true_mean) / (true_std ** 2)) * pdf_ideal
     cdf_int_ideal = (x_grid - true_mean) * cdf_ideal + (true_std ** 2) * pdf_ideal
     
-    cdf_trials = np.zeros((M, 1000))
-    pdf_trials = np.zeros((M, 1000))
-    pdf_deriv_trials = np.zeros((M, 1000))
-    cdf_int_trials = np.zeros((M, 1000))
+    # Online accumulators for 65,536 trials
+    min_cdf, max_cdf = np.full(num_grid, 1e9), np.full(num_grid, -1e9)
+    min_pdf, max_pdf = np.full(num_grid, 1e9), np.full(num_grid, -1e9)
+    min_int, max_int = np.full(num_grid, 1e9), np.full(num_grid, -1e9)
+    min_deriv, max_deriv = np.full(num_grid, 1e9), np.full(num_grid, -1e9)
     
-    print(f"Running M={M} independent trials (N={N} samples each)...")
+    sum_cdf, sum_sq_cdf = np.zeros(num_grid), np.zeros(num_grid)
+    sum_pdf, sum_sq_pdf = np.zeros(num_grid), np.zeros(num_grid)
+    sum_int, sum_sq_int = np.zeros(num_grid), np.zeros(num_grid)
+    sum_deriv, sum_sq_deriv = np.zeros(num_grid), np.zeros(num_grid)
     
-    for m in range(M):
-        seed = 10000 + m
-        x_samples = generate_samples(num_samples=N, mean=true_mean, std=true_std, seed=seed)
+    y_empirical_cdf = (np.arange(1, N + 1) - 0.5) / N
+    
+    print(f"Running M={M} (2^16 = 65,536) trials ({M * N:,} total sample points)...")
+    t0 = time.time()
+    
+    chunk_size = 2048
+    num_chunks = M // chunk_size
+    
+    for c in range(num_chunks):
+        np.random.seed(4242 + c)
+        samples_chunk = np.sort(np.random.normal(true_mean, true_std, size=(chunk_size, N)), axis=1)
         
-        sample_mean = np.mean(x_samples)
-        sample_std = np.std(x_samples, ddof=1)
-        
-        y_empirical_cdf = (np.arange(1, N + 1) - 0.5) / N
-        pdf_algebraic_sample = cdf_to_pdf_algebraic(y_empirical_cdf, sigma=sample_std)
-        pdf_deriv_sample = pdf_to_derivative_algebraic(pdf_algebraic_sample, x_samples, mean=sample_mean, sigma=sample_std)
-        cdf_int_sample = cdf_to_integral_algebraic(y_empirical_cdf, pdf_algebraic_sample, sigma=sample_std)
-        
-        cdf_trials[m] = np.interp(x_grid, x_samples, y_empirical_cdf)
-        pdf_trials[m] = np.interp(x_grid, x_samples, pdf_algebraic_sample)
-        pdf_deriv_trials[m] = np.interp(x_grid, x_samples, pdf_deriv_sample)
-        cdf_int_trials[m] = np.interp(x_grid, x_samples, cdf_int_sample)
+        for i in range(chunk_size):
+            x_samples = samples_chunk[i]
+            sample_mean = np.mean(x_samples)
+            sample_std = np.std(x_samples, ddof=1)
+            
+            pdf_sample = cdf_to_pdf_algebraic(y_empirical_cdf, sigma=sample_std)
+            pdf_deriv_sample = pdf_to_derivative_algebraic(pdf_sample, x_samples, mean=sample_mean, sigma=sample_std)
+            cdf_int_sample = cdf_to_integral_algebraic(y_empirical_cdf, pdf_sample, sigma=sample_std)
+            
+            # Interpolate onto x_grid
+            c_interp = np.interp(x_grid, x_samples, y_empirical_cdf)
+            p_interp = np.interp(x_grid, x_samples, pdf_sample)
+            d_interp = np.interp(x_grid, x_samples, pdf_deriv_sample)
+            i_interp = np.interp(x_grid, x_samples, cdf_int_sample)
+            
+            # Min / Max bounds
+            min_cdf = np.minimum(min_cdf, c_interp)
+            max_cdf = np.maximum(max_cdf, c_interp)
+            
+            min_pdf = np.minimum(min_pdf, p_interp)
+            max_pdf = np.maximum(max_pdf, p_interp)
+            
+            min_deriv = np.minimum(min_deriv, d_interp)
+            max_deriv = np.maximum(max_deriv, d_interp)
+            
+            min_int = np.minimum(min_int, i_interp)
+            max_int = np.maximum(max_int, i_interp)
+            
+            # Residual accumulators (sample - ideal)
+            r_c = c_interp - cdf_ideal
+            r_p = p_interp - pdf_ideal
+            r_d = d_interp - pdf_deriv_ideal
+            r_i = i_interp - cdf_int_ideal
+            
+            sum_cdf += r_c
+            sum_sq_cdf += r_c ** 2
+            
+            sum_pdf += r_p
+            sum_sq_pdf += r_p ** 2
+            
+            sum_deriv += r_d
+            sum_sq_deriv += r_d ** 2
+            
+            sum_int += r_i
+            sum_sq_int += r_i ** 2
 
-    # Min / Max Shaded Bounds across 1024 trials
-    min_cdf, max_cdf = np.min(cdf_trials, axis=0), np.max(cdf_trials, axis=0)
-    min_pdf, max_pdf = np.min(pdf_trials, axis=0), np.max(pdf_trials, axis=0)
-    min_int, max_int = np.min(cdf_int_trials, axis=0), np.max(cdf_int_trials, axis=0)
-    min_deriv, max_deriv = np.min(pdf_deriv_trials, axis=0), np.max(pdf_deriv_trials, axis=0)
-
-    # Residual Standard Deviations across 1024 trials
-    std_res_cdf = np.std(cdf_trials - cdf_ideal, axis=0)
-    std_res_pdf = np.std(pdf_trials - pdf_ideal, axis=0)
-    std_res_cdf_int = np.std(cdf_int_trials - cdf_int_ideal, axis=0)
-    std_res_pdf_deriv = np.std(pdf_deriv_trials - pdf_deriv_ideal, axis=0)
+    # Compute Residual Standard Deviations across 65,536 trials
+    std_res_cdf = np.sqrt(np.maximum(0.0, (sum_sq_cdf / M) - (sum_cdf / M) ** 2))
+    std_res_pdf = np.sqrt(np.maximum(0.0, (sum_sq_pdf / M) - (sum_pdf / M) ** 2))
+    std_res_pdf_deriv = np.sqrt(np.maximum(0.0, (sum_sq_deriv / M) - (sum_deriv / M) ** 2))
+    std_res_cdf_int = np.sqrt(np.maximum(0.0, (sum_sq_int / M) - (sum_int / M) ** 2))
+    
+    t1 = time.time()
+    print(f"Completed 65,536 trials in {t1 - t0:.2f} seconds!")
     
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=300)
     
@@ -95,7 +134,7 @@ def main():
     # PANE 1 (Top-Left): CDF (Blue Palette + Shaded Min-Max Band)
     # -------------------------------------------------------------
     ax1 = axes[0, 0]
-    ax1.fill_between(x_grid, min_cdf, max_cdf, color=color_cdf, alpha=0.25, label='Min-Max Bounds (1024 Trials)')
+    ax1.fill_between(x_grid, min_cdf, max_cdf, color=color_cdf, alpha=0.25, label='Min-Max Bounds (65,536 Trials)')
     ax1.plot(x_grid, cdf_ideal, color='black', linewidth=2.5, label='Ideal CDF Φ(x)')
     
     ax1.set_xlabel('Sample Values (x)', fontsize=10, fontweight='bold')
@@ -116,7 +155,7 @@ def main():
     # PANE 2 (Top-Right): PDF (Orange Palette + Shaded Min-Max Band)
     # -------------------------------------------------------------
     ax2 = axes[0, 1]
-    ax2.fill_between(x_grid, min_pdf, max_pdf, color=color_pdf, alpha=0.25, label='Min-Max Bounds (1024 Trials)')
+    ax2.fill_between(x_grid, min_pdf, max_pdf, color=color_pdf, alpha=0.25, label='Min-Max Bounds (65,536 Trials)')
     ax2.plot(x_grid, pdf_ideal, color='black', linewidth=2.5, label='Ideal Gaussian PDF f(x)')
     
     ax2.set_xlabel('Sample Values (x)', fontsize=10, fontweight='bold')
@@ -137,7 +176,7 @@ def main():
     # PANE 3 (Bottom-Left): CDF Integral (Green Palette + Shaded Min-Max Band)
     # -------------------------------------------------------------
     ax3 = axes[1, 0]
-    ax3.fill_between(x_grid, min_int, max_int, color=color_int, alpha=0.25, label='Min-Max Bounds (1024 Trials)')
+    ax3.fill_between(x_grid, min_int, max_int, color=color_int, alpha=0.25, label='Min-Max Bounds (65,536 Trials)')
     ax3.plot(x_grid, cdf_int_ideal, color='black', linewidth=2.5, label='Ideal CDF Integral ∫ Φ(t) dt')
     
     ax3.set_xlabel('Sample Values (x)', fontsize=10, fontweight='bold')
@@ -158,7 +197,7 @@ def main():
     # PANE 4 (Bottom-Right): PDF Derivative (Purple Palette + Shaded Min-Max Band)
     # -------------------------------------------------------------
     ax4 = axes[1, 1]
-    ax4.fill_between(x_grid, min_deriv, max_deriv, color=color_deriv, alpha=0.25, label='Min-Max Bounds (1024 Trials)')
+    ax4.fill_between(x_grid, min_deriv, max_deriv, color=color_deriv, alpha=0.25, label='Min-Max Bounds (65,536 Trials)')
     ax4.plot(x_grid, pdf_deriv_ideal, color='black', linewidth=2.5, label="Ideal PDF Derivative f'(x)")
     ax4.axhline(0, color='gray', linestyle='-', alpha=0.5)
     
@@ -179,7 +218,7 @@ def main():
     plt.tight_layout()
     plt.savefig(output_plot_path, dpi=300)
     plt.close()
-    print(f"Shaded Min-Max Envelope Plot saved successfully to: {output_plot_path}")
+    print(f"65,536-Trial Shaded Envelope Plot saved successfully to: {output_plot_path}")
 
 if __name__ == "__main__":
     main()
