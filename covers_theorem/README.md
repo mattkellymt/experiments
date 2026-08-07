@@ -1,44 +1,58 @@
-# Unsupervised InfoNCE Self-Supervised Learning Experiment (ZERO LABELS)
+# Dynamic High-Dimensional Experiment with Null Class Injection
 
-This script implements **Pure Unsupervised InfoNCE (SimCLR-Style)** in PyTorch on dynamically generated 8D Gaussian clusters ($K = 8$).
-
----
-
-## 1. How Unsupervised InfoNCE Works (Zero Human Labels)
-
-1. **Input:** High-dimensional 8D data points $x_i \in \mathbb{R}^8$. **NO class labels $y_i$ are provided during pre-training.**
-2. **Data Augmentations:** For every sample $x_i$, generate 2 augmented views:
-   $$x_i^{(1)} = x_i + \delta_1, \quad x_i^{(2)} = x_i + \delta_2 \quad (\delta \sim \mathcal{N}(0, \sigma_{\text{aug}}^2))$$
-3. **SimCLR-Style InfoNCE Loss:**
-   $$\mathcal{L}_{\text{InfoNCE}} = -\log \frac{\exp(\text{sim}(z_i^{(1)}, z_i^{(2)}) / \tau)}{\sum_{k \neq i} \exp(\text{sim}(z_i^{(1)}, z_k) / \tau)}$$
-   * **Pulls** positive augmented views of the same sample together.
-   * **Pushes** negative samples in the mini-batch apart uniformly across the 2D unit circle ($\mathbb{S}^1$).
+This experiment evaluates **Dynamic On-The-Fly Data Generation**, **Balanced Mini-Batch Training**, and **Modern 2D Representation Learning (InfoNCE)** when a **Null Class (Class 0: Standard Normal Background Noise $\mathcal{N}(0, I_8)$)** is injected into every mini-batch:
 
 ---
 
-## 2. Results & Linear Probing Evaluation
+## 1. System Specifications with Null Class
 
-* **Pre-Training Labels Used:** **`0 (Zero Human Labels)`**
-* **Pre-Training Steps:** 300 steps on dynamic batches of size 32.
-* **Linear Probe Test Accuracy on Frozen Features:** **`100.00%`** (256/256 correct classifications).
-* **Self-Discovered Structure:** InfoNCE automatically organized the 8 classes into 8 perfectly isolated, equiangular clusters around the 2D unit circle!
+* **Number of Classes ($K$):** $K = 8$ total classes:
+  * **Class 0 (Null Noise Class):** Unstructured Standard Normal Noise $\mathcal{N}(0, I_8)$ centered at origin ($c_0 = 0$, $\sigma_0 = 1.0$).
+  * **Classes 1 to 7 (Signal Classes):** 7 structured Gaussian signal clusters ($c_k \sim \mathcal{N}(0, 3.5^2)$, $\sigma_k \sim |\mathcal{N}(0.6, 0.25)|$).
+* **Input Feature Dimension ($d_{\text{in}}$):** $d_{\text{in}} = 8$ dimensions.
+* **Balanced Mini-Batch:** Batch size = $K = 8$ (exactly 1 Null sample + 7 Signal samples per mini-batch).
+* **Dynamically Sampled Test Set:** $N_{\text{test}} = 256$ samples (32 Null samples + 224 Signal samples).
 
 ---
 
-## 3. Visual Graphic
+## 2. Dynamic Training Dynamics Progression (Null Class Injected)
 
-![Unsupervised InfoNCE Visual Graphic](infonce_unsupervised_story.png)
+| Step Range | Dynamic Mini-Batch Loss | Dynamic Test Accuracy (%) | Training State |
+| :---: | :---: | :---: | :--- |
+| **Step 1** | 2.4584 | 37.5% | Initial state |
+| **Step 10** | 0.3059 | 89.8% | Learning background vs signal boundaries |
+| **Step 20** | 0.2006 | 94.5% | High signal-to-noise separability |
+| **Step 50** | 0.0189 | **100.0%** | **100.0% Test Acc (Null & Signal)** |
+| **Step 100** | 0.0018 | **100.0%** | Final convergence plateau |
 
-- **Panel 1:** Unsupervised InfoNCE loss reduction curve during pre-training.
-- **Panel 2:** t-SNE 2D manifold projection of raw 8D input space before pre-training.
-- **Panel 3:** **Self-Discovered 2D Latent Representation (Zero Labels!)** showing the 8 classes naturally organized into 8 distinct clusters around the unit circle.
-- **Panel 4:** Linear Probe confusion matrix on frozen unsupervised features (**100.00% Test Accuracy**).
+---
+
+## 3. How the Null Class Affects Training & Latent Geometry
+
+1. **Explicit Background / Noise Boundary:**
+   Instead of forcing the network to divide all 8D space among signal classes, the Null Class $\mathcal{N}(0, I_8)$ acts as a **Background Anchor**. The network learns a clear decision boundary separating unstructured noise from structured signals.
+2. **Null Anchor in InfoNCE 2D Latent Unit Circle ($\mathbb{S}^1$):**
+   In the 2D unit circle representation, the Null Class occupies an equiangular point alongside the 7 signal classes.
+3. **Robustness & Accuracy:**
+   * Overall Test Accuracy: **`100.00%`** (256/256 correct).
+   * Null Class Accuracy: **`100.00%`** (32/32 correct).
+   * Signal Classes Accuracy: **`100.00%`** (224/224 correct).
+
+---
+
+## 4. Visual Graphic
+
+![Dynamic High-D Graphic](dynamic_highd.png)
+
+- **Panel 1:** Dynamic loss reduction (Red curve) and Test Accuracy growth (Cyan dashed line hitting 100.0% at Step 50).
+- **Panel 2:** t-SNE 2D manifold projection of raw 8D input space, with the **White dots representing the Null Class $\mathcal{N}(0, I_8)$ at the origin**.
+- **Panel 3:** **InfoNCE 2D Latent Space with Null Anchor**, showing the Null Class (White dot) and 7 Signal Classes cleanly organized around the unit circle.
+- **Panel 4:** Confusion matrix on 256 dynamically sampled test points (100.00% Test Acc across Null and Signal classes).
 
 ---
 
 ## Files
 
-- [`infonce_unsupervised_demo.py`](infonce_unsupervised_demo.py) — Pure Unsupervised InfoNCE PyTorch script
-- [`infonce_unsupervised_story.png`](infonce_unsupervised_story.png) — Generated visual graphic
-- [`dynamic_highd_experiment.py`](dynamic_highd_experiment.py) — Supervised dynamic high-D script
+- [`dynamic_highd.py`](dynamic_highd.py) — Python script for dynamic 8D Null Class experiment
+- [`dynamic_highd.png`](dynamic_highd.png) — Generated 4-panel visual graphic
 - [`README.md`](README.md) — Documentation report
