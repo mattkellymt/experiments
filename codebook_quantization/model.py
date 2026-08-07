@@ -4,42 +4,59 @@ import torch.nn.functional as F
 
 torch.manual_seed(42)
 
-def quantize_fp4_block(weight_blocks: torch.Tensor, block_elements: int = 1024) -> torch.Tensor:
-    """Quantizes flat weight blocks into 4-bit FP4 micro-scaled grid values."""
-    w = weight_blocks.detach().clone()
-    fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight_blocks.device)
+# STE Autograd Function for FP4 Binning
+class STEFP4Grid(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, weight_blocks: torch.Tensor, block_elements: int = 1024) -> torch.Tensor:
+        w = weight_blocks.detach().clone()
+        fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight_blocks.device)
 
-    w_flat = w.view(-1, block_elements)
-    block_max = torch.max(torch.abs(w_flat), dim=1, keepdim=True).values
-    scale = torch.clamp(block_max / 6.0, min=1e-12)
-    w_scaled = w_flat / scale
-    w_sign = torch.sign(w_scaled)
-    w_abs = torch.abs(w_scaled)
-    diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
-    indices = torch.argmin(diffs, dim=-1)
-    w_q = fp4_grid[indices] * w_sign * scale
-    return w_q.view_as(weight_blocks)
+        w_flat = w.view(-1, block_elements)
+        scale = torch.clamp(torch.max(torch.abs(w_flat), dim=1, keepdim=True).values / 6.0, min=1e-12)
+        w_scaled = w_flat / scale
+        w_sign = torch.sign(w_scaled)
+        w_abs = torch.abs(w_scaled)
+        diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
+        indices = torch.argmin(diffs, dim=-1)
+        w_q = fp4_grid[indices] * w_sign * scale
+        return w_q.view_as(weight_blocks)
 
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None  # Straight-Through Estimator Identity Pass-Through Gradient!
 
-def quantize_fp8_block(weight_blocks: torch.Tensor, block_elements: int = 1024) -> torch.Tensor:
-    """Quantizes flat weight blocks into 8-bit FP8 (E4M3) micro-scaled grid values."""
-    w = weight_blocks.detach().clone()
-    w_flat = w.view(-1, block_elements)
-    scale = torch.clamp(torch.max(torch.abs(w_flat), dim=1, keepdim=True).values / 448.0, min=1e-12)
-    w_scaled = w_flat / scale
-    w_q = torch.clamp(torch.round(w_scaled), -448.0, 448.0)
-    return (w_q * scale).view_as(weight_blocks)
+ste_fp4_quantize = STEFP4Grid.apply
 
 
-class NonLinearCodebookRehydrator(nn.Module):
+# STE Autograd Function for FP8 Binning
+class STEFP8Grid(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, weight_blocks: torch.Tensor, block_elements: int = 1024) -> torch.Tensor:
+        w = weight_blocks.detach().clone()
+        w_flat = w.view(-1, block_elements)
+        scale = torch.clamp(torch.max(torch.abs(w_flat), dim=1, keepdim=True).values / 448.0, min=1e-12)
+        w_scaled = w_flat / scale
+        w_q = torch.clamp(torch.round(w_scaled), -448.0, 448.0)
+        return (w_q * scale).view_as(weight_blocks)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None  # Straight-Through Estimator Identity Pass-Through Gradient!
+
+ste_fp8_quantize = STEFP8Grid.apply
+
+
+class STENonLinearCodebookRehydrator(nn.Module):
     """
-    Non-Linear Neural Rehydration Engine for FP4 & FP8 Quantized Weights:
-    1. Input: 32x32 blocks of low-precision quantized weights (W_low_prec).
-    2. Non-Linear Feature Extractor (MLP + GELU):
-       h = GELU(Linear(W_low_prec_flat)) -> maps coarse grid noise into smooth feature space.
-    3. Gated Non-Linear Neural Rehydration:
-       W_rehydrated = W_low_prec + RefinementHead(h)
-    4. Rehydrates coarse FP4 grid steps into high-fidelity FP32 weight matrices!
+    STE (Straight-Through Estimator) Binning + Non-Linear Neural Codebook Rehydrator:
+    1. FP32 Master Weights (W_master): Fine-tuned continuously via STE gradients.
+    2. STE Discrete Grid Binning: In forward pass, force W_master into FP4 or FP8 bins (W_binned).
+       In backward pass, STE passes gradients directly to W_master!
+    3. Non-Linear Feature Extractor (MLP + GELU):
+       h = GELU(Linear(W_binned_flat)) -> maps discrete bin steps into smooth feature space.
+    4. Gated Non-Linear Neural Rehydration:
+       W_rehydrated = W_binned + gamma * RefinementHead(h)
+    5. Allows master weights to settle into optimal bins while the neural engine cleans up step noise!
     """
     def __init__(self, out_features: int, in_features: int, format_type: str = "fp4", block_h: int = 32, block_w: int = 32, hidden_dim: int = 512):
         super().__init__()
@@ -54,6 +71,9 @@ class NonLinearCodebookRehydrator(nn.Module):
         self.num_w = in_features // block_w
         self.num_blocks = self.num_h * self.num_w
 
+        # Master FP32 Weights
+        self.weight_master = nn.Parameter(torch.randn(out_features, in_features) * 0.05)
+
         # Non-Linear Neural Feature Extractor
         self.feature_extractor = nn.Sequential(
             nn.Linear(self.block_elements, hidden_dim),
@@ -66,24 +86,24 @@ class NonLinearCodebookRehydrator(nn.Module):
         self.refinement_head = nn.Linear(hidden_dim, self.block_elements)
         self.gamma = nn.Parameter(torch.zeros(1))  # Start at zero gate to guarantee stability!
 
-    def forward(self, W: torch.Tensor, hard: bool = False) -> torch.Tensor:
+    def forward(self, hard: bool = False) -> torch.Tensor:
         # Slices master weights into 32x32 blocks
-        W_blocks = W.view(self.num_h, self.block_h, self.num_w, self.block_w).permute(0, 2, 1, 3).reshape(self.num_blocks, self.block_h, self.block_w)
+        W_blocks = self.weight_master.view(self.num_h, self.block_h, self.num_w, self.block_w).permute(0, 2, 1, 3).reshape(self.num_blocks, self.block_h, self.block_w)
 
-        # 1. Quantize 32x32 blocks to low-precision grid values (W_q)
+        # 1. STE Binning: Force master weights into discrete bins
         if self.format_type == "fp4":
-            W_q_blocks = quantize_fp4_block(W_blocks, block_elements=self.block_elements)
+            W_binned_blocks = ste_fp4_quantize(W_blocks, self.block_elements)
         else:
-            W_q_blocks = quantize_fp8_block(W_blocks, block_elements=self.block_elements)
+            W_binned_blocks = ste_fp8_quantize(W_blocks, self.block_elements)
 
-        W_q_flat = W_q_blocks.reshape(self.num_blocks, self.block_elements)
+        W_binned_flat = W_binned_blocks.reshape(self.num_blocks, self.block_elements)
 
         # 2. Non-Linear Neural Feature Extraction: h ∈ R^(num_blocks x hidden_dim)
-        h = self.feature_extractor(W_q_flat)
+        h = self.feature_extractor(W_binned_flat)
 
         # 3. Non-Linear Neural Rehydration
         non_linear_delta = self.refinement_head(h)
-        W_rehydrated_flat = W_q_flat + self.gamma * non_linear_delta
+        W_rehydrated_flat = W_binned_flat + self.gamma * non_linear_delta
         W_rehydrated_blocks = W_rehydrated_flat.reshape(self.num_blocks, self.block_h, self.block_w)
 
         # Reconstruct full weight tensor shape (out_features, in_features)
@@ -91,15 +111,14 @@ class NonLinearCodebookRehydrator(nn.Module):
         return W_rehydrated
 
 
-class NeuralRehydrationLinear(nn.Module):
-    """Linear layer wrapper applying Non-Linear Neural Rehydration."""
+class STENeuralRehydrationLinear(nn.Module):
+    """Linear layer wrapper applying STE Binning + Non-Linear Neural Rehydration."""
     def __init__(self, in_features: int, out_features: int, format_type: str = "fp4"):
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.05)
-        self.quantizer = NonLinearCodebookRehydrator(out_features, in_features, format_type=format_type)
+        self.quantizer = STENonLinearCodebookRehydrator(out_features, in_features, format_type=format_type)
 
     def forward(self, x: torch.Tensor, hard: bool = False) -> torch.Tensor:
-        w_rehydrated = self.quantizer(self.weight, hard=hard)
+        w_rehydrated = self.quantizer(hard=hard)
         return F.linear(x, w_rehydrated)
 
 
