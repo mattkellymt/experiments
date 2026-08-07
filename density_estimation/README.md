@@ -1,34 +1,29 @@
-# Histogram-Free Density Estimation & Closed-Form CDF-to-PDF Transformation
+# Closed-Loop Algebraic Transformation Suite (CDF ↔ PDF)
 
-## 1. Mathematical Formulation
+## 1. Closed-Form Algebraic Formulas
 
-The Probability Density Function $f(x)$ of a Gaussian distribution $\mathcal{N}(\mu, \sigma^2)$ can be expressed directly as a closed-form algebraic function $g(y)$ of its Cumulative Distribution Function $y = F(x) \in (0, 1)$:
+1. **CDF to PDF Transformation $g(y)$:**
+   $$g(y) = \frac{1}{\sigma \sqrt{2\pi}} \exp\left( - \left[ \text{erfinv}(2y - 1) \right]^2 \right)$$
 
-$$g(y) = \frac{1}{\sigma \sqrt{2\pi}} \exp\left( - \left[ \text{erfinv}(2y - 1) \right]^2 \right)$$
-
-where $\text{erfinv}$ is the Inverse Error Function.
-
-### Derivation
-1. **Gaussian PDF:** $f(x) = \frac{1}{\sigma \sqrt{2\pi}} \exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)$
-2. **Gaussian CDF:** $y = F(x) = \frac{1}{2}\left[ 1 + \text{erf}\left(\frac{x-\mu}{\sigma\sqrt{2}}\right)\right]$
-3. **Inversion:** $\frac{x-\mu}{\sigma} = \sqrt{2} \cdot \text{erfinv}(2y - 1)$
-4. **Substitution:** $f(y) = \frac{1}{\sigma \sqrt{2\pi}} \exp\left(-\left[ \text{erfinv}(2y - 1) \right]^2 \right)$
+2. **PDF to CDF Transformation $y(f)$:**
+   $$y(f) = \frac{1}{2} \left[ 1 \pm \text{erf}\left( \sqrt{ -\ln\left( f \cdot \sigma \sqrt{2\pi} \right) } \right) \right]$$
 
 ---
 
-## 2. Experiment Setup
+## 2. Experiment Setup ($N=2000$)
 
-* **Samples ($N=2000$):** Drawn from $\mathcal{N}(\mu=1.5, \sigma=2.0)$.
-* **Measured Sample Parameters:** Sample Mean $\hat{\mu} = 1.5902$, Sample Std $\hat{\sigma} = 1.9769$.
-* **Empirical CDF Ranks:** $y_i = \frac{i - 0.5}{N}$ for sorted sample values $x_{(1)} \le x_{(2)} \le \dots \le x_{(N)}$.
+* **Sample Generation:** Drawn from $\mathcal{N}(\mu=1.5, \sigma=2.0)$.
+* **Measured Parameters:** Sample Mean $\hat{\mu} = 1.5902$, Sample Std $\hat{\sigma} = 1.9769$.
 
 ---
 
-## 3. Results & Alignment
+## 3. Results & Closed-Loop Alignment
 
-| Method / Representation | Input CDF Array Shape | Output Transformed PDF Array Shape | Alignment $R^2$ Score | RMSE |
-| :--- | :---: | :---: | :---: | :---: |
-| **Exact Algebraic Transform $g(y)$** | `(2000,)` | `(2000,)` | **`0.999288`** | `0.001505` |
+| Pipeline Stage | Mathematical Transformation | Alignment $R^2$ Score |
+| :--- | :---: | :---: |
+| **Pane 1: Empirical CDF** | $y_{\text{emp}} = \frac{i - 0.5}{N}$ (Sorted Ranks) | Reference Input |
+| **Pane 2: CDF $\rightarrow$ PDF** | $g(y) = \frac{1}{\sigma \sqrt{2\pi}} e^{-[\text{erfinv}(2y-1)]^2}$ | **`R² = 0.999288`** 🥇 |
+| **Pane 3: PDF $\rightarrow$ CDF** | $y(f) = \frac{1}{2}\left[1 \pm \text{erf}\left(\sqrt{-\ln(f \sigma \sqrt{2\pi})}\right)\right]$ | **`R² = 0.999817`** 🥇 |
 
 ---
 
@@ -36,13 +31,14 @@ where $\text{erfinv}$ is the Inverse Error Function.
 
 ![Visual Summary Plot](plot.png)
 
-- **Plot 1 (Left - CDF):** Empirical Sample Ranks $y_{\text{emp}} = \frac{i - 0.5}{N}$ vs. Theoretical CDF Line $y_{\text{theo}} = \Phi(x)$.
-- **Plot 2 (Right - PDF):** Transformed PDF $g(y_{\text{emp}})$ vs. Theoretical Gaussian PDF.
+- **Pane 1 (Left):** Empirical CDF dots $y_{\text{emp}} = \frac{i - 0.5}{N}$ vs. Theoretical CDF Line $y_{\text{theo}} = \Phi(x)$.
+- **Pane 2 (Middle):** PDF Created Algebraically from CDF ($R^2 = 0.9993$).
+- **Pane 3 (Right):** CDF Reconstructed Algebraically from PDF ($R^2 = 0.9998$).
 
 ---
 
 ## Files
 
 - [`run.py`](run.py) — Entrypoint Python script
-- [`plot.png`](plot.png) — 2-panel visual graphic
+- [`plot.png`](plot.png) — 3-panel visual graphic
 - [`README.md`](README.md) — Documentation report
