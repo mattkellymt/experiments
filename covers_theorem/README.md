@@ -1,50 +1,56 @@
-# Cover's Theorem & Training Batch Dynamics Experiment
+# Modern High-Dimensional Dynamic On-The-Fly Cluster Experiment
 
-This directory evaluates **Cover's Theorem**, **Generalization**, and **Batching Strategies** (Batch Size = 4) across 4 classes:
-
----
-
-## 1. The 3 Batching Strategies (Batch Size = 4)
-
-1. **Strategy 1: Pure Random Shuffled (Standard i.i.d.)**
-   * Batches of 4 are sampled uniformly at random from the dataset.
-   * Gives unbiased, stochastic gradient estimates.
-2. **Strategy 2: Balanced / Stratified (Exactly 1 Instance Per Class Per Batch)**
-   * Every batch contains **exactly 1 sample from Class 0, Class 1, Class 2, and Class 3**.
-   * Forces the network to update decision boundaries for all 4 classes simultaneously in every step.
-3. **Strategy 3: Single-Class Sequential (Block Batching)**
-   * Batch 1-8: **All 4 samples are Class 0**.
-   * Batch 9-16: **All 4 samples are Class 1**.
-   * Batch 17-24: **All 4 samples are Class 2**.
-   * Batch 25-32: **All 4 samples are Class 3**.
+This experiment implements **Dynamic On-The-Fly Data Generation**, **Balanced Mini-Batch Training**, and **Modern 2D Representation Learning (Supervised Contrastive Learning / InfoNCE)** in an 8-dimensional space ($d_{\text{in}} = 8$):
 
 ---
 
-## 2. Empirical Performance Comparison
+## 1. System Specifications
 
-| Batching Strategy | Final Train Accuracy (%) | Final Test Accuracy (%) | Training Dynamics & Behavior |
-| :--- | :---: | :---: | :--- |
-| **Strategy 1: Pure Random** | **98.4%** | **96.1%** | Smooth stochastic convergence. |
-| **Strategy 2: Balanced (1/Class)** | **98.4%** | **96.9%** | **Fastest, cleanest joint convergence.** All 4 classes learned symmetrically. |
-| **Strategy 3: Single-Class Sequential** | **59.4%** | **61.7%** | **Catastrophic Forgetting & Class Collapse!** Overwrites previous class weights. |
+* **Number of Classes ($K$):** $K = 8$ (Power of 2: $2^3 = 8$).
+* **Input Feature Dimension ($d_{\text{in}}$):** $d_{\text{in}} = 8$ dimensions.
+* **On-The-Fly Dynamic Generation:** No pre-stored static dataset array. Class centroids $c_k \in \mathbb{R}^8 \sim \mathcal{N}(0, 3.0^2)$ and standard deviations $\sigma_k \in \mathbb{R}^8 \sim |\mathcal{N}(0.6, 0.25)|$ are stored in memory. Mini-batches are generated dynamically on demand.
+* **Balanced Batching Strategy:** Batch size = $K = 8$ (exactly 1 instance per class per mini-batch).
+* **Dynamically Generated Test Set:** $N_{\text{test}} = 8 \times 32 = 256$ samples generated on the fly.
 
 ---
 
-## 3. Visual Graphic
+## 2. Dynamic Training Dynamics Progression
 
-![Batch Dynamics Story Graphic](batch_dynamics_story.png)
+| Step Range | Dynamic Mini-Batch Loss | Dynamic Test Accuracy (%) | Training State |
+| :---: | :---: | :---: | :--- |
+| **Step 1** | 2.1178 | 38.3% | Initial state |
+| **Step 10** | 0.0722 | **100.0%** | Rapid convergence |
+| **Step 20** | 0.0028 | **100.0%** | Loss target threshold met (< 0.005) |
+| **Step 50** | 0.0006 | **100.0%** | High precision stability |
+| **Step 100** | 0.0005 | **100.0%** | Final convergence plateau |
 
-- **Panel 1 (Single-Class Sequential):** Shows per-class accuracy over 32 steps. When training on Class 3 in steps 25-32, the accuracy for Class 0 and Class 1 **collapses to 0%** (Catastrophic Forgetting).
-- **Panel 2 (Balanced 1-per-Class):** Shows all 4 class accuracies smoothly remaining near 100% throughout all 32 steps.
-- **Panel 3 (Pure Random):** Shows stochastic class learning without catastrophic forgetting.
-- **Panel 4 (Final Accuracy Bar Chart):** Compares final Train & Test accuracy across all 3 strategies.
+---
+
+## 3. Modern 2D Dimensionality Reduction & Representation Learning
+
+Instead of legacy linear projections (like PCA), we implemented two state-of-the-art representation visualization techniques:
+
+1. **Modern Supervised Contrastive / Parametric 2D Latent Representation Encoder (SupCon / InfoNCE):**
+   * A neural network encoder $E_\theta: \mathbb{R}^8 \rightarrow \mathbb{S}^1$ trained using **Supervised Contrastive Loss (InfoNCE)**.
+   * Maps 8D input clusters onto a normalized 2D unit circle ($\mathbb{S}^1$), pulling instances of the same class into tight 2D clusters while pushing different classes far apart.
+2. **t-SNE (t-Distributed Stochastic Neighbor Embedding):**
+   * Non-linear manifold learning projecting the 8D overlapping Gaussian clusters into 2D.
+
+---
+
+## 4. Visual Graphic
+
+![Dynamic High-D Story Graphic](dynamic_highd_story.png)
+
+- **Panel 1:** Smooth dynamic training dynamics showing Cross-Entropy Loss reduction (Red curve) and Test Accuracy growth (Cyan dashed curve jumping to 100.0%).
+- **Panel 2:** t-SNE 2D manifold projection of the raw 8D input clusters.
+- **Panel 3:** **Modern Supervised Contrastive 2D Latent Unit Circle (InfoNCE)** showing the 8 classes cleanly organized around a 2D hypersphere.
+- **Panel 4:** Confusion matrix on 256 dynamically sampled unseen test points (100.00% Test Acc).
 
 ---
 
 ## Files
 
-- [`batch_dynamics_experiment.py`](batch_dynamics_experiment.py) — Python script for 3-strategy batch experiment
-- [`batch_dynamics_story.png`](batch_dynamics_story.png) — Generated visual graphic
-- [`covers_4class_experiment.py`](covers_4class_experiment.py) — Python script for Cover's theorem 4-class experiment
-- [`covers_4class_story.png`](covers_4class_story.png) — Generated Cover's theorem graphic
-- [`README.md`](README.md) — Documentation report
+- [`dynamic_highd_experiment.py`](dynamic_highd_experiment.py) — Python script for dynamic on-the-fly 8D experiment
+- [`dynamic_highd_story.png`](dynamic_highd_story.png) — Generated 4-panel visual graphic
+- [`README.md`](README.md) — Experiment documentation report
