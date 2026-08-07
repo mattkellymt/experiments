@@ -3,6 +3,54 @@ import torch.nn as nn
 
 torch.manual_seed(42)
 
+class STEQuantizeFP8(torch.autograd.Function):
+    """Fake Quantization for FP8 with Straight-Through Estimator (STE)."""
+    @staticmethod
+    def forward(ctx, weight):
+        row_max = torch.max(torch.abs(weight), dim=1, keepdim=True).values
+        scale = torch.clamp(row_max / 448.0, min=1e-12)
+        w_q = (weight / scale).to(torch.float8_e4m3fn).to(torch.float32) * scale
+        return w_q
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+
+class STEQuantizeFP4(torch.autograd.Function):
+    """Fake Quantization for FP4 (E2M1 Grid) with Straight-Through Estimator (STE)."""
+    @staticmethod
+    def forward(ctx, weight, block_size=32):
+        fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
+        orig_shape = weight.shape
+        w_flat = weight.reshape(-1, block_size)
+        block_max = torch.max(torch.abs(w_flat), dim=1, keepdim=True).values
+        scale = torch.clamp(block_max / 6.0, min=1e-12)
+        w_scaled = w_flat / scale
+        w_sign = torch.sign(w_scaled)
+        w_abs = torch.abs(w_scaled)
+        diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
+        indices = torch.argmin(diffs, dim=-1)
+        w_q = (fp4_grid[indices] * w_sign * scale).reshape(orig_shape)
+        return w_q
+
+    @staticmethod
+    def backward(ctx, grad_output, block_size=None):
+        return grad_output, None
+
+
+class QATLinear(nn.Module):
+    """Linear layer wrapper that applies Fake Quantization during forward pass."""
+    def __init__(self, in_features: int, out_features: int, ste_fn):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        self.ste_fn = ste_fn
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w_fake_q = self.ste_fn(self.weight)
+        return torch.nn.functional.linear(x, w_fake_q)
+
+
 class RotationModel(nn.Module):
     def __init__(self, dim: int = 256, hidden_dim: int = 1024):
         super().__init__()
