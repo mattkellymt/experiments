@@ -3,13 +3,13 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
-from model import RotationModel, CodebookRehydrationLinear, generate_dataset
+from model import RotationModel, FP8NeuralRehydrationLinear, generate_dataset
 
 def evaluate_codebook_model(m_cb: nn.Module, x_test: torch.Tensor, hard: bool = False) -> torch.Tensor:
     m_cb.eval()
     x = x_test.clone()
     for child in m_cb.children():
-        if isinstance(child, CodebookRehydrationLinear):
+        if isinstance(child, FP8NeuralRehydrationLinear):
             x = child(x, hard=hard)
         else:
             x = child(x)
@@ -33,36 +33,38 @@ def main():
 
     mag_ref = torch.norm(y_ref, p=2, dim=1).cpu().numpy()
 
-    block_configs = [
-        ("32x32 Block (0.18 MB)", 32, 32, "#1f77b4", "model_codebook_32x32.pt"),
-        ("16x16 Block (0.22 MB)", 16, 16, "#2ca02c", "model_codebook_16x16.pt"),
-        ("8x8 Block (0.32 MB)", 8, 8, "#ff7f0e", "model_codebook_8x8.pt"),
-        ("4x4 Block (0.45 MB)", 4, 4, "#d62728", "model_codebook_4x4.pt"),
+    # Load Raw FP8 Model
+    raw_fp8_path = os.path.join(script_dir, "model_raw_fp8.pt")
+    m_raw_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    m_raw_fp8.load_state_dict(torch.load(raw_fp8_path, weights_only=True))
+    m_raw_fp8.eval()
+    with torch.no_grad():
+        y_raw_fp8 = m_raw_fp8(x_test).float()
+
+    # Load Non-Linear Neural FP8 Rehydrator Model
+    nonlinear_fp8_path = os.path.join(script_dir, "model_nonlinear_fp8.pt")
+    state_dict = torch.load(nonlinear_fp8_path, weights_only=True)
+    m_nonlinear_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
+
+    for name, child in m_fp32.named_children():
+        if isinstance(child, nn.Linear):
+            cb_layer = FP8NeuralRehydrationLinear(child.in_features, child.out_features, k_codes=256).to(device)
+            setattr(m_nonlinear_fp8, name, cb_layer)
+
+    m_nonlinear_fp8.load_state_dict(state_dict)
+    m_nonlinear_fp8.eval()
+
+    with torch.no_grad():
+        y_nonlinear_fp8 = evaluate_codebook_model(m_nonlinear_fp8, x_test, hard=True).float()
+
+    variants = [
+        ("Raw Naive FP8 Baseline", y_raw_fp8, "#d62728"),
+        ("Non-Linear Neural FP8 Rehydrator", y_nonlinear_fp8, "#1f77b4"),
     ]
 
     data = {}
 
-    for label, bh, bw, color, fname in block_configs:
-        fpath = os.path.join(script_dir, fname)
-        if not os.path.exists(fpath):
-            continue
-
-        state_dict = torch.load(fpath, weights_only=True)
-        m_cb = RotationModel(dim=256, hidden_dim=1024).to(device)
-
-        for name, child in m_fp32.named_children():
-            if isinstance(child, nn.Linear):
-                k_shape = state_dict[f"{name}.quantizer.codebook"].shape[0]
-                cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=k_shape, block_h=bh, block_w=bw).to(device)
-                cb_layer.quantizer.codebook = nn.Parameter(torch.randn(k_shape, bh, bw, device=device))
-                setattr(m_cb, name, cb_layer)
-
-        m_cb.load_state_dict(state_dict)
-        m_cb.eval()
-
-        with torch.no_grad():
-            y_var = evaluate_codebook_model(m_cb, x_test, hard=True).float()
-
+    for label, y_var, color in variants:
         cos_sims = torch.nn.functional.cosine_similarity(y_ref, y_var, dim=1).cpu().numpy()
         mag_var = torch.norm(y_var, p=2, dim=1).cpu().numpy()
         rel_mag_delta = (mag_var - mag_ref) / mag_ref * 100.0
@@ -78,26 +80,26 @@ def main():
     # -------------------------------------------------------------
     # ROW 1: SCATTER & ANNEALING PLOTS
     # -------------------------------------------------------------
-    # Panel 1 (Row 1 Left): Relative Magnitude Error vs Cosine Similarity Sweep
+    # Panel 1 (Row 1 Left): Relative Magnitude Error vs Cosine Similarity
     ax1 = axes[0, 0]
     for label, d in data.items():
-        ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
+        ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.55, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=24)
 
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
-    ax1.set_xlabel("Relative Magnitude Error (%): (||y_rehydrated|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
+    ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("Block Size Sweep: Relative Magnitude Error vs. Cosine Similarity", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("Method Scatter: Raw FP8 vs. Non-Linear Neural Rehydrator", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
     # Panel 2 (Row 1 Right): Temperature Annealing Curve
     ax2 = axes[0, 1]
-    epochs = np.arange(1, 36)
-    taus = 1.0 * ((0.05 / 1.0) ** (epochs / 35.0))
+    epochs = np.arange(1, 41)
+    taus = 1.0 * ((0.05 / 1.0) ** (epochs / 40.0))
     ax2.plot(epochs, taus, color='#9467bd', linewidth=2.5, label='Softmax Temperature (τ: 1.0 → 0.05)')
     ax2.set_xlabel("Fine-Tuning Epochs", fontsize=10, fontweight='bold')
     ax2.set_ylabel("Softmax Temperature (τ)", fontsize=10, fontweight='bold')
-    ax2.set_title("Softmax Annealing: Mixture → Hard Discrete Selection", fontsize=12, fontweight='bold', pad=10)
+    ax2.set_title("Softmax Annealing: Non-Linear Routing → Hard Selection", fontsize=12, fontweight='bold', pad=10)
     ax2.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=9)
     ax2.grid(True, linestyle='--', alpha=0.5)
 
@@ -113,7 +115,7 @@ def main():
 
     ax3.set_xlabel("Cosine Similarity", fontsize=10, fontweight='bold')
     ax3.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
-    ax3.set_title("Distribution Bins: Cosine Similarity Across Block Sizes", fontsize=12, fontweight='bold', pad=10)
+    ax3.set_title("Distribution Bins: Cosine Similarity Comparison", fontsize=12, fontweight='bold', pad=10)
     ax3.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=8)
     ax3.grid(True, linestyle='--', alpha=0.5)
 
