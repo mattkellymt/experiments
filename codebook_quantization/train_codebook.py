@@ -9,6 +9,7 @@ from model import (
 )
 
 def native_fp4_quantize_weight(weight: torch.Tensor, block_size: int = 32) -> torch.Tensor:
+    """TorchAO Native FP4 Micro-Scaling."""
     w = weight.detach().clone().float()
     orig_shape = w.shape
     fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
@@ -25,7 +26,8 @@ def native_fp4_quantize_weight(weight: torch.Tensor, block_size: int = 32) -> to
     return w_q.reshape(orig_shape)
 
 
-def build_codebook_model(model_fp32: nn.Module, k_codes: int = 64) -> nn.Module:
+def build_codebook_model(model_fp32: nn.Module, k_codes: int = 128) -> nn.Module:
+    """Converts a standard model into a Scaled Neural Codebook Rehydration model."""
     m_cb = RotationModel(dim=256, hidden_dim=1024)
 
     for name, child in model_fp32.named_children():
@@ -33,6 +35,7 @@ def build_codebook_model(model_fp32: nn.Module, k_codes: int = 64) -> nn.Module:
             cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=k_codes)
             cb_layer.weight.data = child.weight.data.clone()
 
+            # Initialize Codebooks by sampling actual trained weight blocks
             out_f, in_f = child.weight.data.shape
             num_h, num_w = out_f // 32, in_f // 32
             W_blocks = child.weight.data.view(num_h, 32, num_w, 32).permute(0, 2, 1, 3).reshape(-1, 32, 32)
@@ -64,12 +67,12 @@ def evaluate_codebook_model(m_cb: nn.Module, x_test: torch.Tensor, hard: bool = 
     return x
 
 
-def train_codebook_variant(model_fp32: nn.Module, x_train: torch.Tensor, y_train: torch.Tensor, out_train_fp32: torch.Tensor, k_codes: int = 64, device="cpu"):
+def train_codebook_variant(model_fp32: nn.Module, x_train: torch.Tensor, y_train: torch.Tensor, out_train_fp32: torch.Tensor, k_codes: int = 128, device="cpu"):
     m_cb = build_codebook_model(model_fp32, k_codes=k_codes).to(device)
     opt_cb = torch.optim.AdamW(m_cb.parameters(), lr=4e-3, weight_decay=1e-5)
     criterion = nn.MSELoss()
 
-    num_epochs = 25
+    num_epochs = 40
     tau_start, tau_end = 1.0, 0.05
 
     for epoch in range(1, num_epochs + 1):
@@ -86,16 +89,19 @@ def train_codebook_variant(model_fp32: nn.Module, x_train: torch.Tensor, y_train
         loss.backward()
         opt_cb.step()
 
+    if device.type == "mps":
+        torch.mps.empty_cache()
+
     return m_cb
 
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    device = "cpu"
-    print(f"Neural Codebook Rehydration Execution Device: {device}", flush=True)
+    device = torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
+    print(f"Neural Codebook Rehydration Execution Device: {device} (Sane Memory Allocated)", flush=True)
 
     # Datasets
-    x_train, y_train = generate_dataset(num_samples=2048, dim=256, seed=42)
+    x_train, y_train = generate_dataset(num_samples=1024, dim=256, seed=42)
     x_test, y_test = generate_dataset(num_samples=512, dim=256, seed=999)
     x_train, y_train = x_train.to(device), y_train.to(device)
     x_test, y_test = x_test.to(device), y_test.to(device)
@@ -132,38 +138,38 @@ def main():
     fp4_native_path = os.path.join(script_dir, "model_fp4_native.pt")
     torch.save(m_fp4_native.state_dict(), fp4_native_path)
 
-    # 3. Build & Fine-Tune K=64 Codebook Model (6-bit index)
-    print("3. Fine-tuning K=64 Codebook Model (6-bit index per block)...", flush=True)
-    m_cb64 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=64, device=device)
-    torch.save(m_cb64.state_dict(), os.path.join(script_dir, "model_codebook_6bit.pt"))
+    # 3. Build & Fine-Tune K=128 Codebook Model (7-bit index)
+    print("3. Fine-tuning K=128 Codebook Model (7-bit index per block)...", flush=True)
+    m_cb128 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=128, device=device)
+    torch.save(m_cb128.state_dict(), os.path.join(script_dir, "model_codebook_7bit.pt"))
 
-    # 4. Build & Fine-Tune K=1024 Codebook Model (10-bit index)
-    print("4. Fine-tuning K=1024 Codebook Model (10-bit index per block)...", flush=True)
-    m_cb1024 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=1024, device=device)
-    torch.save(m_cb1024.state_dict(), os.path.join(script_dir, "model_codebook_10bit.pt"))
+    # 4. Build & Fine-Tune K=256 Codebook Model (8-bit index)
+    print("4. Fine-tuning K=256 Codebook Model (8-bit index per block)...", flush=True)
+    m_cb256 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=256, device=device)
+    torch.save(m_cb256.state_dict(), os.path.join(script_dir, "model_codebook_8bit.pt"))
 
     # Evaluate outputs
     with torch.no_grad():
         out_native_fp4 = m_fp4_native(x_test).float()
-        out_cb64_hard = evaluate_codebook_model(m_cb64, x_test, hard=True).float()
-        out_cb1024_hard = evaluate_codebook_model(m_cb1024, x_test, hard=True).float()
+        out_cb128_hard = evaluate_codebook_model(m_cb128, x_test, hard=True).float()
+        out_cb256_hard = evaluate_codebook_model(m_cb256, x_test, hard=True).float()
 
     variants = [
         ("FP32 (Ref Ground Truth)", fp32_path, out_fp32),
         ("TorchAO Native FP4", fp4_native_path, out_native_fp4),
-        ("Codebook K=64 (6-bit Index)", os.path.join(script_dir, "model_codebook_6bit.pt"), out_cb64_hard),
-        ("Codebook K=1024 (10-bit Index)", os.path.join(script_dir, "model_codebook_10bit.pt"), out_cb1024_hard),
+        ("Codebook K=128 (7-bit Index)", os.path.join(script_dir, "model_codebook_7bit.pt"), out_cb128_hard),
+        ("Codebook K=256 (8-bit Index)", os.path.join(script_dir, "model_codebook_8bit.pt"), out_cb256_hard),
     ]
 
     sizes = {
         "FP32 (Ref Ground Truth)": "10.00 MB",
         "TorchAO Native FP4": "1.41 MB",
-        "Codebook K=64 (6-bit Index)": "0.19 MB",
-        "Codebook K=1024 (10-bit Index)": "0.22 MB",
+        "Codebook K=128 (7-bit Index)": "0.19 MB",
+        "Codebook K=256 (8-bit Index)": "0.20 MB",
     }
 
     print("\n" + "=" * 130, flush=True)
-    print("EXPERIMENTAL DUAL-CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS", flush=True)
+    print("LIGHTWEIGHT DUAL-CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS", flush=True)
     print("=" * 130, flush=True)
     print(f"{'Quantization Method / Format':<32} | {'Eff. Size':<10} | {'Worst Cos Sim':<15} | {'Ref Mag':<10} | {'Var Mag':<10} | {'Mean Cos':<10}", flush=True)
     print("-" * 130, flush=True)
