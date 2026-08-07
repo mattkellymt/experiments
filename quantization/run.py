@@ -98,9 +98,10 @@ def evaluate_predictions(y_ref: torch.Tensor, y_var: torch.Tensor, y_true: torch
     }
 
 # -----------------------------------------------------------------------------
-# 3. Quantization Algorithms (Naive RTN, GPTQ, AWQ, QAT)
+# 3. Quantization Algorithms (RTN, GPTQ, AWQ, QAT)
 # -----------------------------------------------------------------------------
-def naive_quantize_weight(weight: torch.Tensor, format_type: str = "fp8", block_size: int = 32) -> torch.Tensor:
+def rtn_quantize_weight(weight: torch.Tensor, format_type: str = "fp8", block_size: int = 32) -> torch.Tensor:
+    """Round-To-Nearest (RTN) Weight Quantization."""
     w = weight.detach().clone().float()
     orig_shape = w.shape
     fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
@@ -142,14 +143,19 @@ def gptq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, forma
             idx_local = i - block_start
             w_col = w_gptq[:, i]
 
-            col_max = torch.max(torch.abs(w_col))
-            scale = col_max / 6.0 if col_max > 0 else 1.0
-            w_scaled = w_col / scale
-            w_sign = torch.sign(w_scaled)
-            w_abs = torch.abs(w_scaled)
-            diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
-            indices = torch.argmin(diffs, dim=-1)
-            w_q = fp4_grid[indices] * w_sign * scale
+            if format_type == "fp8":
+                col_max = torch.max(torch.abs(w_col))
+                scale = col_max / 448.0 if col_max > 0 else 1.0
+                w_q = (w_col / scale).to(torch.float8_e4m3fn).to(torch.float32) * scale
+            else:
+                col_max = torch.max(torch.abs(w_col))
+                scale = col_max / 6.0 if col_max > 0 else 1.0
+                w_scaled = w_col / scale
+                w_sign = torch.sign(w_scaled)
+                w_abs = torch.abs(w_scaled)
+                diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
+                indices = torch.argmin(diffs, dim=-1)
+                w_q = fp4_grid[indices] * w_sign * scale
 
             delta = w_col - w_q
             w_gptq[:, i] = w_q
@@ -171,20 +177,28 @@ def awq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, format
     best_error = float("inf")
     fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
 
+    def quant_fn(w_mat):
+        if format_type == "fp8":
+            r_max = torch.max(torch.abs(w_mat), dim=1, keepdim=True).values
+            scale = torch.clamp(r_max / 448.0, min=1e-12)
+            return (w_mat / scale).to(torch.float8_e4m3fn).to(torch.float32) * scale
+        else:
+            w_flat = w_mat.reshape(-1, block_size)
+            b_max = torch.max(torch.abs(w_flat), dim=1, keepdim=True).values
+            scale = torch.clamp(b_max / 6.0, min=1e-12)
+            w_s = w_flat / scale
+            w_sign = torch.sign(w_s)
+            w_abs = torch.abs(w_s)
+            diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
+            indices = torch.argmin(diffs, dim=-1)
+            return (fp4_grid[indices] * w_sign * scale).reshape(out_features, in_features)
+
     for alpha in torch.linspace(0.0, 1.0, 11):
         S = torch.pow(act_means, alpha)
         S = torch.clamp(S / torch.mean(S), min=1e-4)
 
         W_scaled = w * S.unsqueeze(0)
-        w_flat = W_scaled.reshape(-1, block_size)
-        b_max = torch.max(torch.abs(w_flat), dim=1, keepdim=True).values
-        scale = torch.clamp(b_max / 6.0, min=1e-12)
-        w_s = w_flat / scale
-        w_sign = torch.sign(w_s)
-        w_abs = torch.abs(w_s)
-        diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
-        indices = torch.argmin(diffs, dim=-1)
-        w_q_scaled = (fp4_grid[indices] * w_sign * scale).reshape(out_features, in_features)
+        w_q_scaled = quant_fn(W_scaled)
 
         W_awq = w_q_scaled / S.unsqueeze(0)
         err = F.mse_loss(X @ W_awq.T, X @ w.T).item()
@@ -197,15 +211,7 @@ def awq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, format
     S = torch.clamp(S / torch.mean(S), min=1e-4)
 
     W_scaled = w * S.unsqueeze(0)
-    w_flat = W_scaled.reshape(-1, block_size)
-    b_max = torch.max(torch.abs(w_flat), dim=1, keepdim=True).values
-    scale = torch.clamp(b_max / 6.0, min=1e-12)
-    w_s = w_flat / scale
-    w_sign = torch.sign(w_s)
-    w_abs = torch.abs(w_s)
-    diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
-    indices = torch.argmin(diffs, dim=-1)
-    w_q_scaled = (fp4_grid[indices] * w_sign * scale).reshape(out_features, in_features)
+    w_q_scaled = quant_fn(W_scaled)
 
     return w_q_scaled / S.unsqueeze(0)
 
@@ -251,11 +257,13 @@ def generate_quantization_plot(models_dict, x_test, output_path=None):
     mag_ref = torch.norm(y_ref, p=2, dim=1).cpu().numpy()
 
     variants = [
-        ("Naive FP4", models_dict["Naive FP4"], "#d62728"),
+        ("RTN FP4", models_dict["RTN FP4"], "#d62728"),
         ("GPTQ FP4", models_dict["GPTQ FP4"], "#ff7f0e"),
         ("AWQ FP4", models_dict["AWQ FP4"], "#9467bd"),
         ("QAT FP4", models_dict["QAT FP4"], "#2ca02c"),
-        ("Naive FP8", models_dict["Naive FP8"], "#17becf"),
+        ("RTN FP8", models_dict["RTN FP8"], "#17becf"),
+        ("GPTQ FP8", models_dict["GPTQ FP8"], "#ff7f0e"),
+        ("AWQ FP8", models_dict["AWQ FP8"], "#9467bd"),
         ("QAT FP8", models_dict["QAT FP8"], "#1f77b4"),
     ]
 
@@ -281,57 +289,64 @@ def generate_quantization_plot(models_dict, x_test, output_path=None):
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=300)
 
-    # Panel 1: 4-Bit Scatter
+    # -------------------------------------------------------------
+    # LEFT COLUMN: 4-BIT METHODS (Top: Scatter, Bottom: Histogram)
+    # -------------------------------------------------------------
+    # Panel 1 (Top Left): 4-Bit Scatter
     ax1 = axes[0, 0]
-    for key in ["Naive FP4", "GPTQ FP4", "AWQ FP4", "QAT FP4"]:
+    for key in ["RTN FP4", "GPTQ FP4", "AWQ FP4", "QAT FP4"]:
         d = data[key]
         ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{key} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
 
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("4-Bit Quantization Methods: Naive vs. GPTQ vs. AWQ vs. QAT", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("4-Bit Quantization: Scatter (Magnitude Error vs. Cosine Sim)", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
-    # Panel 2: 8-Bit Scatter
-    ax2 = axes[0, 1]
-    for key in ["Naive FP8", "QAT FP8"]:
+    # Panel 2 (Bottom Left): 4-Bit Cosine Similarity Histogram
+    ax2 = axes[1, 0]
+    cos_4bit = np.concatenate([data[k]["cos_sims"] for k in ["RTN FP4", "GPTQ FP4", "AWQ FP4", "QAT FP4"]])
+    bins_4bit = np.linspace(np.min(cos_4bit) - 0.001, 1.0001, 40)
+    for key in ["RTN FP4", "GPTQ FP4", "AWQ FP4", "QAT FP4"]:
         d = data[key]
-        ax2.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{key} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
+        ax2.hist(d["cos_sims"], bins=bins_4bit, alpha=0.35, color=d["color"], label=f"{key} (Min: {np.min(d['cos_sims']):.4f})", histtype='stepfilled')
 
-    ax2.axvline(0, color='gray', linestyle='--', alpha=0.7)
-    ax2.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
-    ax2.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax2.set_title("8-Bit Quantization Methods: Naive FP8 vs. QAT FP8", fontsize=12, fontweight='bold', pad=10)
-    ax2.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
+    ax2.set_xlabel("Cosine Similarity", fontsize=10, fontweight='bold')
+    ax2.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
+    ax2.set_title("4-Bit Quantization: Cosine Similarity Distribution Bins", fontsize=12, fontweight='bold', pad=10)
+    ax2.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=9)
     ax2.grid(True, linestyle='--', alpha=0.5)
 
-    # Panel 3: Cosine Similarity Bins
-    ax3 = axes[1, 0]
-    all_cos = np.concatenate([d["cos_sims"] for d in data.values()])
-    cos_bins = np.linspace(np.min(all_cos) - 0.001, 1.0001, 50)
-    for label, d in data.items():
-        ax3.hist(d["cos_sims"], bins=cos_bins, alpha=0.3, color=d["color"], label=f"{label} (Min: {np.min(d['cos_sims']):.4f})", histtype='stepfilled')
+    # -------------------------------------------------------------
+    # RIGHT COLUMN: 8-BIT METHODS (Top: Scatter, Bottom: Histogram)
+    # -------------------------------------------------------------
+    # Panel 3 (Top Right): 8-Bit Scatter
+    ax3 = axes[0, 1]
+    for key in ["RTN FP8", "GPTQ FP8", "AWQ FP8", "QAT FP8"]:
+        d = data[key]
+        ax3.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{key} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
 
-    ax3.set_xlabel("Cosine Similarity", fontsize=10, fontweight='bold')
-    ax3.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
-    ax3.set_title("Distribution Bins: Cosine Similarity Across All Methods", fontsize=12, fontweight='bold', pad=10)
-    ax3.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=8)
+    ax3.axvline(0, color='gray', linestyle='--', alpha=0.7)
+    ax3.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
+    ax3.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
+    ax3.set_title("8-Bit Quantization: Scatter (Magnitude Error vs. Cosine Sim)", fontsize=12, fontweight='bold', pad=10)
+    ax3.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax3.grid(True, linestyle='--', alpha=0.5)
 
-    # Panel 4: Magnitude Error Bins
+    # Panel 4 (Bottom Right): 8-Bit Cosine Similarity Histogram
     ax4 = axes[1, 1]
-    all_mag_deltas = np.concatenate([d["rel_mag_delta"] for d in data.values()])
-    mag_bins = np.linspace(np.min(all_mag_deltas) - 0.2, np.max(all_mag_deltas) + 0.2, 50)
-    for label, d in data.items():
-        ax4.hist(d["rel_mag_delta"], bins=mag_bins, alpha=0.3, color=d["color"], label=f"{label} (Std: {np.std(d['rel_mag_delta']):.2f}%)", histtype='stepfilled')
+    cos_8bit = np.concatenate([data[k]["cos_sims"] for k in ["RTN FP8", "GPTQ FP8", "AWQ FP8", "QAT FP8"]])
+    bins_8bit = np.linspace(np.min(cos_8bit) - 0.0005, 1.00005, 40)
+    for key in ["RTN FP8", "GPTQ FP8", "AWQ FP8", "QAT FP8"]:
+        d = data[key]
+        ax4.hist(d["cos_sims"], bins=bins_8bit, alpha=0.35, color=d["color"], label=f"{key} (Min: {np.min(d['cos_sims']):.4f})", histtype='stepfilled')
 
-    ax4.axvline(0, color='black', linestyle='--', alpha=0.7)
-    ax4.set_xlabel("Relative Magnitude Error (%)", fontsize=10, fontweight='bold')
+    ax4.set_xlabel("Cosine Similarity", fontsize=10, fontweight='bold')
     ax4.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
-    ax4.set_title("Distribution Bins: Vector Magnitude Shifts (%) Across All Methods", fontsize=12, fontweight='bold', pad=10)
-    ax4.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=8)
+    ax4.set_title("8-Bit Quantization: Cosine Similarity Distribution Bins", fontsize=12, fontweight='bold', pad=10)
+    ax4.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=9)
     ax4.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
@@ -375,26 +390,35 @@ def main():
     m_bf16 = RotationModel(dim=256, hidden_dim=1024).to(device, dtype=torch.bfloat16)
     m_bf16.load_state_dict({k: v.bfloat16() for k, v in model_fp32.state_dict().items()})
 
-    # 3. Naive RTN FP8 & FP4
-    print("2. Applying Naive Round-To-Nearest (RTN) PTQ in memory...")
-    m_naive_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
-    m_naive_fp8.load_state_dict(model_fp32.state_dict())
-    for mod in m_naive_fp8.modules():
+    # 3. RTN FP8 & FP4
+    print("2. Applying Round-To-Nearest (RTN) PTQ in memory...")
+    m_rtn_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    m_rtn_fp8.load_state_dict(model_fp32.state_dict())
+    for mod in m_rtn_fp8.modules():
         if isinstance(mod, nn.Linear):
-            mod.weight.data = naive_quantize_weight(mod.weight.data, format_type="fp8")
+            mod.weight.data = rtn_quantize_weight(mod.weight.data, format_type="fp8")
 
-    m_naive_fp4 = RotationModel(dim=256, hidden_dim=1024).to(device)
-    m_naive_fp4.load_state_dict(model_fp32.state_dict())
-    for mod in m_naive_fp4.modules():
+    m_rtn_fp4 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    m_rtn_fp4.load_state_dict(model_fp32.state_dict())
+    for mod in m_rtn_fp4.modules():
         if isinstance(mod, nn.Linear):
-            mod.weight.data = naive_quantize_weight(mod.weight.data, format_type="fp4")
+            mod.weight.data = rtn_quantize_weight(mod.weight.data, format_type="fp4")
 
-    # 4. GPTQ FP4
-    print("3. Applying GPTQ (Hessian Error Nudge) in memory...")
+    # 4. GPTQ FP8 & FP4
+    print("3. Applying GPTQ (Hessian Error Nudge) FP8 & FP4 in memory...")
+    m_gptq_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    m_gptq_fp8.load_state_dict(model_fp32.state_dict())
+    m_gptq_fp8.eval()
+    curr_calib = x_calib.clone().float()
+    for name, module in m_gptq_fp8.named_children():
+        if isinstance(module, nn.Linear):
+            module.weight.data = gptq_quantize_layer(module.weight.data, curr_calib, format_type="fp8")
+            with torch.no_grad():
+                curr_calib = module(curr_calib)
+
     m_gptq_fp4 = RotationModel(dim=256, hidden_dim=1024).to(device)
     m_gptq_fp4.load_state_dict(model_fp32.state_dict())
     m_gptq_fp4.eval()
-
     curr_calib = x_calib.clone().float()
     for name, module in m_gptq_fp4.named_children():
         if isinstance(module, nn.Linear):
@@ -402,12 +426,21 @@ def main():
             with torch.no_grad():
                 curr_calib = module(curr_calib)
 
-    # 5. AWQ FP4
-    print("4. Applying AWQ (Activation-aware Weight Quantization) in memory...")
+    # 5. AWQ FP8 & FP4
+    print("4. Applying AWQ (Activation-aware Weight Quantization) FP8 & FP4 in memory...")
+    m_awq_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    m_awq_fp8.load_state_dict(model_fp32.state_dict())
+    m_awq_fp8.eval()
+    curr_calib = x_calib.clone().float()
+    for name, module in m_awq_fp8.named_children():
+        if isinstance(module, nn.Linear):
+            module.weight.data = awq_quantize_layer(module.weight.data, curr_calib, format_type="fp8")
+            with torch.no_grad():
+                curr_calib = module(curr_calib)
+
     m_awq_fp4 = RotationModel(dim=256, hidden_dim=1024).to(device)
     m_awq_fp4.load_state_dict(model_fp32.state_dict())
     m_awq_fp4.eval()
-
     curr_calib = x_calib.clone().float()
     for name, module in m_awq_fp4.named_children():
         if isinstance(module, nn.Linear):
@@ -446,9 +479,11 @@ def main():
     models_dict = {
         "FP32": model_fp32,
         "BF16": m_bf16,
-        "Naive FP8": m_naive_fp8,
+        "RTN FP8": m_rtn_fp8,
+        "GPTQ FP8": m_gptq_fp8,
+        "AWQ FP8": m_awq_fp8,
         "QAT FP8": m_qat_fp8_export,
-        "Naive FP4": m_naive_fp4,
+        "RTN FP4": m_rtn_fp4,
         "GPTQ FP4": m_gptq_fp4,
         "AWQ FP4": m_awq_fp4,
         "QAT FP4": m_qat_fp4_export,
@@ -457,9 +492,11 @@ def main():
     with torch.no_grad():
         out_fp32 = model_fp32(x_test).float()
         out_bf16 = m_bf16(x_test.bfloat16()).float()
-        out_naive_fp8 = m_naive_fp8(x_test).float()
+        out_rtn_fp8 = m_rtn_fp8(x_test).float()
+        out_gptq_fp8 = m_gptq_fp8(x_test).float()
+        out_awq_fp8 = m_awq_fp8(x_test).float()
         out_qat_fp8 = m_qat_fp8_export(x_test).float()
-        out_naive_fp4 = m_naive_fp4(x_test).float()
+        out_rtn_fp4 = m_rtn_fp4(x_test).float()
         out_gptq_fp4 = m_gptq_fp4(x_test).float()
         out_awq_fp4 = m_awq_fp4(x_test).float()
         out_qat_fp4 = m_qat_fp4_export(x_test).float()
@@ -467,9 +504,11 @@ def main():
     variants = [
         ("FP32 (Ref Ground Truth)", out_fp32),
         ("BF16 (IEEE Truncation)", out_bf16),
-        ("Naive FP8 (RTN)", out_naive_fp8),
+        ("RTN FP8 (Round-To-Nearest)", out_rtn_fp8),
+        ("GPTQ FP8 (Hessian Nudge)", out_gptq_fp8),
+        ("AWQ FP8 (Salient Channel)", out_awq_fp8),
         ("QAT FP8 (STE Fine-Tuned)", out_qat_fp8),
-        ("Naive FP4 (RTN)", out_naive_fp4),
+        ("RTN FP4 (Round-To-Nearest)", out_rtn_fp4),
         ("GPTQ FP4 (Hessian Nudge)", out_gptq_fp4),
         ("AWQ FP4 (Salient Channel)", out_awq_fp4),
         ("QAT FP4 (STE Fine-Tuned)", out_qat_fp4),
@@ -478,9 +517,11 @@ def main():
     sizes = {
         "FP32 (Ref Ground Truth)": "10.0 MB",
         "BF16 (IEEE Truncation)": "5.0 MB",
-        "Naive FP8 (RTN)": "2.5 MB",
+        "RTN FP8 (Round-To-Nearest)": "2.5 MB",
+        "GPTQ FP8 (Hessian Nudge)": "2.5 MB",
+        "AWQ FP8 (Salient Channel)": "2.5 MB",
         "QAT FP8 (STE Fine-Tuned)": "2.5 MB",
-        "Naive FP4 (RTN)": "1.4 MB",
+        "RTN FP4 (Round-To-Nearest)": "1.4 MB",
         "GPTQ FP4 (Hessian Nudge)": "1.4 MB",
         "AWQ FP4 (Salient Channel)": "1.4 MB",
         "QAT FP4 (STE Fine-Tuned)": "1.4 MB",
