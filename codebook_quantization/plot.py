@@ -17,7 +17,7 @@ def evaluate_codebook_model(m_cb: nn.Module, x_test: torch.Tensor, hard: bool = 
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 
     num_samples = 1024
     x_test, y_test = generate_dataset(num_samples=num_samples, dim=256, seed=999)
@@ -41,26 +41,36 @@ def main():
     with torch.no_grad():
         y_fp4 = m_fp4(x_test).float()
 
-    # Load Codebook Model
-    cb_path = os.path.join(script_dir, "model_codebook_6bit.pt")
-    m_cb = RotationModel(dim=256, hidden_dim=1024).to(device)
-    # Rebuild codebook modules
+    # Load K=64 Codebook Model
+    cb64_path = os.path.join(script_dir, "model_codebook_6bit.pt")
+    m_cb64 = RotationModel(dim=256, hidden_dim=1024).to(device)
     for name, child in m_fp32.named_children():
         if isinstance(child, nn.Linear):
-            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=64)
-            setattr(m_cb, name, cb_layer)
+            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=64).to(device)
+            setattr(m_cb64, name, cb_layer)
 
-    m_cb.load_state_dict(torch.load(cb_path, weights_only=True))
-    m_cb.eval()
+    m_cb64.load_state_dict(torch.load(cb64_path, weights_only=True))
+    m_cb64.eval()
+
+    # Load K=1024 Codebook Model
+    cb1024_path = os.path.join(script_dir, "model_codebook_10bit.pt")
+    m_cb1024 = RotationModel(dim=256, hidden_dim=1024).to(device)
+    for name, child in m_fp32.named_children():
+        if isinstance(child, nn.Linear):
+            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=1024).to(device)
+            setattr(m_cb1024, name, cb_layer)
+
+    m_cb1024.load_state_dict(torch.load(cb1024_path, weights_only=True))
+    m_cb1024.eval()
 
     with torch.no_grad():
-        y_cb_soft = evaluate_codebook_model(m_cb, x_test, hard=False).float()
-        y_cb_hard = evaluate_codebook_model(m_cb, x_test, hard=True).float()
+        y_cb64 = evaluate_codebook_model(m_cb64, x_test, hard=True).float()
+        y_cb1024 = evaluate_codebook_model(m_cb1024, x_test, hard=True).float()
 
     variants = [
         ("TorchAO Native FP4 (1.41 MB)", y_fp4, "#d62728"),
-        ("Codebook Soft Mixture (0.19 MB)", y_cb_soft, "#1f77b4"),
-        ("Codebook Hard Rehydrated (0.19 MB)", y_cb_hard, "#2ca02c"),
+        ("Codebook K=64 (6-bit, 0.19 MB)", y_cb64, "#1f77b4"),
+        ("Codebook K=1024 (10-bit, 0.22 MB)", y_cb1024, "#2ca02c"),
     ]
 
     data = {}
@@ -81,7 +91,7 @@ def main():
     # -------------------------------------------------------------
     # ROW 1: SCATTER PLOTS
     # -------------------------------------------------------------
-    # Panel 1 (Row 1 Left): TorchAO FP4 vs Dual Codebook Rehydration Scatter
+    # Panel 1 (Row 1 Left): TorchAO FP4 vs Codebook K=64 vs Codebook K=1024 Scatter
     ax1 = axes[0, 0]
     for label, d in data.items():
         ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
@@ -89,18 +99,18 @@ def main():
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. Dual-Codebook Rehydration", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. K=64 & K=1024 Codebooks", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
     # Panel 2 (Row 1 Right): Temperature Annealing Curve
     ax2 = axes[0, 1]
-    epochs = np.arange(1, 81)
-    taus = 1.0 * ((0.05 / 1.0) ** (epochs / 80.0))
+    epochs = np.arange(1, 61)
+    taus = 1.0 * ((0.05 / 1.0) ** (epochs / 60.0))
     ax2.plot(epochs, taus, color='#9467bd', linewidth=2.5, label='Softmax Temperature (τ: 1.0 → 0.05)')
     ax2.set_xlabel("Fine-Tuning Epochs", fontsize=10, fontweight='bold')
     ax2.set_ylabel("Softmax Temperature (τ)", fontsize=10, fontweight='bold')
-    ax2.set_title("Codebook Annealing: Softmax Mixture to Hard 6-Bit Index Selection", fontsize=12, fontweight='bold', pad=10)
+    ax2.set_title("Codebook Annealing: Softmax Mixture to Hard Index Selection", fontsize=12, fontweight='bold', pad=10)
     ax2.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=9)
     ax2.grid(True, linestyle='--', alpha=0.5)
 
