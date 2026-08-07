@@ -13,20 +13,20 @@ np.random.seed(42)
 torch.manual_seed(42)
 
 # -----------------------------------------------------------------------------
-# 1. Dynamic Generator with Null Class (Class 0 = Standard Normal Noise N(0, I))
+# 1. Dynamic Generator with Null Class (Clean Signal Clusters, No Input Feature Error)
 # -----------------------------------------------------------------------------
 class DynamicNullHighDClusterGenerator:
     """
     On-The-Fly Data Generator for K High-Dimensional Clusters:
     - Class 0: NULL CLASS (Unstructured Standard Normal Noise N(0, I8) at Origin).
-    - Classes 1 to K-1: Structured Signal Clusters centered at random centroids.
+    - Classes 1 to K-1: Structured Signal Clusters centered at random centroids (Clean Features).
     """
     def __init__(self, K=8, d_in=8, seed=42):
         np.random.seed(seed)
         self.K = K
         self.d_in = d_in
         
-        # Centroids and Stds initialization
+        # Centroids and Signal Stds
         self.centroids = np.zeros((K, d_in))
         self.stds = np.ones((K, d_in)) # Class 0 Null Class: Centroid=0, Std=1.0
         
@@ -113,7 +113,7 @@ def run_dynamic_highd_experiment():
     print("DYNAMIC HIGH-DIMENSIONAL EXPERIMENT WITH NULL CLASS INJECTION")
     print(f"Number of Classes K = {K} (Class 0: NULL N(0, I8), Classes 1-7: Signal)")
     print(f"Batch Size = {batch_size} (1 Null + 7 Signal per mini-batch)")
-    print(f"Input Feature Dimension d_in = {d_in}D Space")
+    print(f"Input Feature Dimension d_in = {d_in}D Space (Clean Inputs)")
     print("==========================================================================")
     print(f"  Class 0 (NULL CLASS): Centroid = [0, 0, 0...] | Std = 1.00 (Unstructured Background Noise)")
     for k in range(1, K):
@@ -192,7 +192,6 @@ def run_dynamic_highd_experiment():
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(16, 12), dpi=300)
     
-    # Color scheme: Class 0 (Null Class) is distinct Bright White / Gray '#E0E0E0'
     class_colors = ['#FFFFFF', '#FF5376', '#00F5D4', '#FFEE55', '#7B2CBF', '#4D96FF', '#FF9F43', '#00BBF9']
     class_labels = ['Class 0 (NULL Noise)', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7']
 

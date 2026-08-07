@@ -1,21 +1,21 @@
-# Dynamic High-Dimensional Experiment with Null Class Injection
+# Dynamic High-Dimensional Experiment with Null Class Injection (Clean Inputs)
 
 This experiment evaluates **Dynamic On-The-Fly Data Generation**, **Balanced Mini-Batch Training**, and **Modern 2D Representation Learning (InfoNCE)** when a **Null Class (Class 0: Standard Normal Background Noise $\mathcal{N}(0, I_8)$)** is injected into every mini-batch:
 
 ---
 
-## 1. System Specifications with Null Class
+## 1. System Specifications
 
 * **Number of Classes ($K$):** $K = 8$ total classes:
   * **Class 0 (Null Noise Class):** Unstructured Standard Normal Noise $\mathcal{N}(0, I_8)$ centered at origin ($c_0 = 0$, $\sigma_0 = 1.0$).
-  * **Classes 1 to 7 (Signal Classes):** 7 structured Gaussian signal clusters ($c_k \sim \mathcal{N}(0, 3.5^2)$, $\sigma_k \sim |\mathcal{N}(0.6, 0.25)|$).
+  * **Classes 1 to 7 (Signal Classes):** 7 clean structured Gaussian signal clusters ($c_k \sim \mathcal{N}(0, 3.5^2)$, $\sigma_k \sim |\mathcal{N}(0.6, 0.25)|$).
 * **Input Feature Dimension ($d_{\text{in}}$):** $d_{\text{in}} = 8$ dimensions.
-* **Balanced Mini-Batch:** Batch size = $K = 8$ (exactly 1 Null sample + 7 Signal samples per mini-batch).
+* **Balanced Mini-Batch:** Batch size = $K = 8$ (1 Null sample + 7 Signal samples per mini-batch).
 * **Dynamically Sampled Test Set:** $N_{\text{test}} = 256$ samples (32 Null samples + 224 Signal samples).
 
 ---
 
-## 2. Dynamic Training Dynamics Progression (Null Class Injected)
+## 2. Dynamic Training Dynamics Progression
 
 | Step Range | Dynamic Mini-Batch Loss | Dynamic Test Accuracy (%) | Training State |
 | :---: | :---: | :---: | :--- |
@@ -27,16 +27,11 @@ This experiment evaluates **Dynamic On-The-Fly Data Generation**, **Balanced Min
 
 ---
 
-## 3. How the Null Class Affects Training & Latent Geometry
+## 3. Results Summary
 
-1. **Explicit Background / Noise Boundary:**
-   Instead of forcing the network to divide all 8D space among signal classes, the Null Class $\mathcal{N}(0, I_8)$ acts as a **Background Anchor**. The network learns a clear decision boundary separating unstructured noise from structured signals.
-2. **Null Anchor in InfoNCE 2D Latent Unit Circle ($\mathbb{S}^1$):**
-   In the 2D unit circle representation, the Null Class occupies an equiangular point alongside the 7 signal classes.
-3. **Robustness & Accuracy:**
-   * Overall Test Accuracy: **`100.00%`** (256/256 correct).
-   * Null Class Accuracy: **`100.00%`** (32/32 correct).
-   * Signal Classes Accuracy: **`100.00%`** (224/224 correct).
+* **Overall Test Accuracy (Dynamically Sampled $N=256$):** **`100.00%`**
+  * Null Class (Class 0) Accuracy: **`100.00%`** (32/32 correct)
+  * Signal Classes (Classes 1–7) Accuracy: **`100.00%`** (224/224 correct)
 
 ---
 
