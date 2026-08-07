@@ -3,13 +3,13 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
-from model import RotationModel, STENeuralRehydrationLinear, generate_dataset
+from model import RotationModel, QuantizedKeyTransformLinear, generate_dataset
 
-def evaluate_ste_model(m_cb: nn.Module, x_test: torch.Tensor) -> torch.Tensor:
+def evaluate_key_transform_model(m_cb: nn.Module, x_test: torch.Tensor) -> torch.Tensor:
     m_cb.eval()
     x = x_test.clone()
     for child in m_cb.children():
-        if isinstance(child, STENeuralRehydrationLinear):
+        if isinstance(child, QuantizedKeyTransformLinear):
             x = child(x)
         else:
             x = child(x)
@@ -33,33 +33,33 @@ def main():
 
     mag_ref = torch.norm(y_ref, p=2, dim=1).cpu().numpy()
 
-    # Load STE FP4 & STE FP8 Models
-    m_ste_fp4 = RotationModel(dim=256, hidden_dim=1024).to(device)
-    for name, child in m_fp32.named_children():
-        if isinstance(child, nn.Linear):
-            setattr(m_ste_fp4, name, STENeuralRehydrationLinear(child.in_features, child.out_features, format_type="fp4").to(device))
-    m_ste_fp4.load_state_dict(torch.load(os.path.join(script_dir, "model_ste_fp4.pt"), weights_only=True))
-    m_ste_fp4.eval()
-
-    m_ste_fp8 = RotationModel(dim=256, hidden_dim=1024).to(device)
-    for name, child in m_fp32.named_children():
-        if isinstance(child, nn.Linear):
-            setattr(m_ste_fp8, name, STENeuralRehydrationLinear(child.in_features, child.out_features, format_type="fp8").to(device))
-    m_ste_fp8.load_state_dict(torch.load(os.path.join(script_dir, "model_ste_fp8.pt"), weights_only=True))
-    m_ste_fp8.eval()
-
-    with torch.no_grad():
-        y_ste_fp4 = evaluate_ste_model(m_ste_fp4, x_test).float()
-        y_ste_fp8 = evaluate_ste_model(m_ste_fp8, x_test).float()
-
-    variants = [
-        ("STE FP4 Binned + Rehydrator", y_ste_fp4, "#ff7f0e"),
-        ("STE FP8 Binned + Rehydrator", y_ste_fp8, "#1f77b4"),
+    configs = [
+        ("Method 1: KV Router (FP4)", "method1_kv_router", "fp4", "#1f77b4", "model_m1_fp4.pt"),
+        ("Method 2: MH Attn (FP4)", "method2_mh_attn", "fp4", "#ff7f0e", "model_m2_fp4.pt"),
+        ("Method 3: Deep KPN (FP4)", "method3_deep_kpn", "fp4", "#2ca02c", "model_m3_fp4.pt"),
+        ("Method 1: KV Router (FP8)", "method1_kv_router", "fp8", "#d62728", "model_m1_fp8.pt"),
+        ("Method 2: MH Attn (FP8)", "method2_mh_attn", "fp8", "#9467bd", "model_m2_fp8.pt"),
+        ("Method 3: Deep KPN (FP8)", "method3_deep_kpn", "fp8", "#8c564b", "model_m3_fp8.pt"),
     ]
 
     data = {}
 
-    for label, y_var, color in variants:
+    for label, method, fmt, color, fname in configs:
+        fpath = os.path.join(script_dir, fname)
+        if not os.path.exists(fpath):
+            continue
+
+        m_var = RotationModel(dim=256, hidden_dim=1024).to(device)
+        for name, child in m_fp32.named_children():
+            if isinstance(child, nn.Linear):
+                setattr(m_var, name, QuantizedKeyTransformLinear(child.in_features, child.out_features, method_type=method, format_type=fmt).to(device))
+
+        m_var.load_state_dict(torch.load(fpath, weights_only=True))
+        m_var.eval()
+
+        with torch.no_grad():
+            y_var = evaluate_key_transform_model(m_var, x_test).float()
+
         cos_sims = torch.nn.functional.cosine_similarity(y_ref, y_var, dim=1).cpu().numpy()
         mag_var = torch.norm(y_var, p=2, dim=1).cpu().numpy()
         rel_mag_delta = (mag_var - mag_ref) / mag_ref * 100.0
@@ -75,27 +75,32 @@ def main():
     # -------------------------------------------------------------
     # ROW 1: SCATTER PLOTS
     # -------------------------------------------------------------
-    # Panel 1 (Row 1 Left): Relative Magnitude Error vs Cosine Similarity
+    # Panel 1 (Row 1 Left): FP4 Key Transform Methods Scatter
     ax1 = axes[0, 0]
-    for label, d in data.items():
-        ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.55, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=24)
+    for label in ["Method 1: KV Router (FP4)", "Method 2: MH Attn (FP4)", "Method 3: Deep KPN (FP4)"]:
+        if label in data:
+            d = data[label]
+            ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.55, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=24)
 
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("STE Binning: Relative Magnitude Error vs. Cosine Similarity", fontsize=12, fontweight='bold', pad=10)
-    ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
+    ax1.set_title("FP4 Methods: Quantized Keys Used for Non-Linear Transforms", fontsize=12, fontweight='bold', pad=10)
+    ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=8)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
-    # Panel 2 (Row 1 Right): STE Gradient Flow Diagram
+    # Panel 2 (Row 1 Right): FP8 Key Transform Methods Scatter
     ax2 = axes[0, 1]
-    epochs = np.arange(1, 61)
-    grad_norm = 1.0 / (1.0 + np.exp(-0.1 * (epochs - 30)))
-    ax2.plot(epochs, grad_norm, color='#9467bd', linewidth=2.5, label='STE Pass-Through Gradient Flow (∂Loss/∂W_master ≈ 1.0)')
-    ax2.set_xlabel("Fine-Tuning Epochs", fontsize=10, fontweight='bold')
-    ax2.set_ylabel("Normalized STE Gradient Flow", fontsize=10, fontweight='bold')
-    ax2.set_title("STE Binning: Continuous Master Weight Adaptation", fontsize=12, fontweight='bold', pad=10)
-    ax2.legend(loc='lower right', frameon=True, framealpha=0.9, fontsize=9)
+    for label in ["Method 1: KV Router (FP8)", "Method 2: MH Attn (FP8)", "Method 3: Deep KPN (FP8)"]:
+        if label in data:
+            d = data[label]
+            ax2.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.55, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=24)
+
+    ax2.axvline(0, color='gray', linestyle='--', alpha=0.7)
+    ax2.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
+    ax2.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
+    ax2.set_title("FP8 Methods: Quantized Keys Used for Non-Linear Transforms", fontsize=12, fontweight='bold', pad=10)
+    ax2.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=8)
     ax2.grid(True, linestyle='--', alpha=0.5)
 
     # -------------------------------------------------------------
@@ -110,8 +115,8 @@ def main():
 
     ax3.set_xlabel("Cosine Similarity", fontsize=10, fontweight='bold')
     ax3.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
-    ax3.set_title("Distribution Bins: Cosine Similarity Comparison", fontsize=12, fontweight='bold', pad=10)
-    ax3.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=8)
+    ax3.set_title("Distribution Bins: Cosine Similarity Comparison Across Methods", fontsize=12, fontweight='bold', pad=10)
+    ax3.legend(loc='upper left', frameon=True, framealpha=0.9, fontsize=7)
     ax3.grid(True, linestyle='--', alpha=0.5)
 
     # Panel 4 (Row 2 Right): Relative Magnitude Error Bins (%)
@@ -125,7 +130,7 @@ def main():
     ax4.set_xlabel("Relative Magnitude Error (%)", fontsize=10, fontweight='bold')
     ax4.set_ylabel("Sample Count", fontsize=10, fontweight='bold')
     ax4.set_title("Distribution Bins: Vector Magnitude Shifts (%)", fontsize=12, fontweight='bold', pad=10)
-    ax4.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=8)
+    ax4.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=7)
     ax4.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
