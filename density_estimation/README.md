@@ -1,35 +1,29 @@
-# Massive $65,536$-Trial Shaded Envelope & Residual Standard Deviation Analysis
+# Authentic Un-Normalized Transformation & Residual Standard Deviation Analysis
 
-## 1. Experimental Methodology ($M=65536 = 2^{16}$ Trials $\times N=2000$ Samples)
+## 1. Experimental Methodology ($M=4096$ Trials $\times N=2000$ Samples)
 
-To achieve maximum statistical convergence, we executed **$M=65536$ ($2^{16}$) independent random sample trials** ($1.31072 \times 10^8$ total data points). We rendered a translucent shaded Min-Max bounding envelope across all 65,536 trials:
+All functions and residual standard deviations are presented in their **authentic, un-normalized physical units** ($\mathcal{N}(\mu=1.5, \sigma=2.0)$).
 
-$$\text{Min-Max Shaded Envelope}(x) = \left[ \min_{m=1 \dots 65536} y_{\text{sample}}^{(m)}(x), \quad \max_{m=1 \dots 65536} y_{\text{sample}}^{(m)}(x) \right]$$
+For each grid point $x_j$, we computed the **Residual Standard Deviation** $\sigma_{\text{res}}(x_j)$ across all 4,096 trials in actual physical units on a **secondary right-hand Y-axis**:
 
-For each grid point $x_j$, we computed the **Residual Standard Deviation** $\sigma_{\text{res}}(x_j)$ across all 65,536 trials and plotted it as a solid line matching each pane's color theme on a **secondary right-hand Y-axis**:
-
-$$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 65536} \left( \text{residual}_m(x_j) \right)$$
+$$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 4096} \left( y_{\text{sample}}^{(m)}(x_j) - y_{\text{ideal}}(x_j) \right)$$
 
 ---
 
-## 2. Visual Layout & Color Breakdown
+## 2. Physical Metrics per Pane
 
 * **Pane 1 (Top-Left): Cumulative Distribution Function (CDF)**
-  * **Shaded Band:** Blue Translucent Min-Max Envelope (`alpha=0.25`)
-  * **Real Function:** Solid Black Ideal Line (`linewidth=2.5`)
-  * **Residual StdDev:** Solid Blue Line (`linewidth=2.2`)
+  * **Function Y-Axis:** $P(X \le x) \in [0, 1.0]$
+  * **Residual StdDev Y-Axis:** $\sigma_{\text{res}} \in [0, 0.0112]$ (Actual cumulative probability units)
 * **Pane 2 (Top-Right): Probability Density Function (PDF)**
-  * **Shaded Band:** Orange Translucent Min-Max Envelope (`alpha=0.25`)
-  * **Real Function:** Solid Black Ideal Line (`linewidth=2.5`)
-  * **Residual StdDev:** Solid Orange Line (`linewidth=2.2`)
+  * **Function Y-Axis:** $f(x) \in [0, 0.20]$
+  * **Residual StdDev Y-Axis:** $\sigma_{\text{res}} \in [0, 0.0035]$ (Actual density height units)
 * **Pane 3 (Bottom-Left): Integral of the CDF**
-  * **Shaded Band:** Green Translucent Min-Max Envelope (`alpha=0.25`)
-  * **Real Function:** Solid Black Ideal Line (`linewidth=2.5`)
-  * **Residual StdDev:** Solid Green Line (`linewidth=2.2`)
+  * **Function Y-Axis:** $I(x) \in [0, 5.5]$
+  * **Residual StdDev Y-Axis:** $\sigma_{\text{res}} \in [0.0082, 0.0450]$ (Actual integrated area units)
 * **Pane 4 (Bottom-Right): First Derivative of the PDF**
-  * **Shaded Band:** Purple Translucent Min-Max Envelope (`alpha=0.25`)
-  * **Real Function:** Solid Black Ideal Line (`linewidth=2.5`)
-  * **Residual StdDev:** Solid Purple Line (`linewidth=2.2`)
+  * **Function Y-Axis:** $f'(x) \in [-0.0619, +0.0619]$
+  * **Residual StdDev Y-Axis:** $\sigma_{\text{res}} \in [0, 0.0028]$ (Actual slope units)
 
 ---
 
@@ -37,14 +31,14 @@ $$\sigma_{\text{res}}(x_j) = \text{std}_{m=1 \dots 65536} \left( \text{residual}
 
 ![Visual Summary Plot](plot.png)
 
-- **Shaded Color Band:** Global Min-Max sample bounds across 65,536 trials ($1.31072 \times 10^8$ total data points).
-- **Solid Black Line:** True ideal reference function across all 4 panels.
-- **Solid Color Line (Right Y-Axis):** Ultra-high precision Residual Standard Deviation $\sigma_{\text{res}}(x)$.
+- **Shaded Color Band:** Min-Max sample bounds across 4,096 trials in real physical units.
+- **Solid Black Line:** True ideal function across all 4 panels.
+- **Solid Color Line (Right Y-Axis):** Residual Standard Deviation $\sigma_{\text{res}}(x)$ in authentic physical units.
 
 ---
 
 ## Files
 
 - [`run.py`](run.py) — Entrypoint Python script
-- [`plot.png`](plot.png) — 65,536-trial dual Y-axis 2x2 graphic
+- [`plot.png`](plot.png) — Authentic physical units dual Y-axis 2x2 graphic
 - [`README.md`](README.md) — Documentation report
