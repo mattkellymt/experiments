@@ -1,10 +1,10 @@
-# Visualizing the Hessian Matrix & Loss Curvature
+# Visualizing the Hessian Matrix & Eigenvector Learning
 
-Personal exploration repo detailing the geometry of the Hessian matrix ($H = \frac{1}{N} X^T X$), loss landscapes, and 2nd-order optimization.
+Personal exploration repo detailing the geometry of the Hessian matrix ($H = \frac{1}{N} X^T X$), loss landscapes, 2nd-order curvature, and learning eigenvectors via Gradient Descent.
 
 ---
 
-## 📐 Why 2D Input $\rightarrow$ 3D Loss Bowl?
+## 📐 1. Why 2D Input $\rightarrow$ 3D Loss Bowl?
 
 Consider a simple linear projection mapping 2D inputs $x = [x_1, x_2]^T$ to a 1D scalar output $y$:
 $$y = w_1 x_1 + w_2 x_2 = \mathbf{w}^T \mathbf{x}$$
@@ -16,29 +16,19 @@ $$y = w_1 x_1 + w_2 x_2 = \mathbf{w}^T \mathbf{x}$$
 
 ---
 
-## 🔬 Calculus: Gradient vs. Hessian
+## 🔬 2. Calculus: Gradient vs. Hessian
 
-### 1. Gradient Vector $\nabla L$ (First Derivatives)
+### Gradient Vector $\nabla L$ (First Derivatives)
 Indicates the **steepest direction of increase** on the 3D loss surface:
 $$\nabla L = \frac{1}{N} X^T (X \mathbf{w} - \mathbf{y})$$
 
-### 2. Hessian Matrix $H$ (Second Derivatives)
+### Hessian Matrix $H$ (Second Derivatives)
 Measures the **3D Curvature (rate of change of the gradient)**:
 $$H = \begin{bmatrix} \frac{\partial^2 L}{\partial w_1^2} & \frac{\partial^2 L}{\partial w_1 \partial w_2} \\[4pt] \frac{\partial^2 L}{\partial w_2 \partial w_1} & \frac{\partial^2 L}{\partial w_2^2} \end{bmatrix} = \frac{1}{N} X^T X$$
 
 ---
 
-## 💡 What Eigenvalues ($\lambda$) and Eigenvectors ($\mathbf{v}$) Tell Us
-
-The eigen-decomposition of $H$ reveals the principal axes of the 3D loss bowl:
-- **Eigenvector $\mathbf{v}_1$ (Direction)**: The direction of the valley floor or wall.
-- **Eigenvalue $\lambda_1$ (Magnitude)**: The steepness of curvature in that direction.
-  - Large $\lambda$: Extremely steep valley wall (high sensitivity).
-  - Small $\lambda$: Very flat valley floor (low sensitivity).
-
----
-
-## 🖼️ Visual Breakdown
+## 🖼️ 3. Loss Surface & Curvature Visualization
 
 ![Hessian Visualization](hessian_visualization.png)
 
@@ -51,7 +41,27 @@ The eigen-decomposition of $H$ reveals the principal axes of the 3D loss bowl:
 
 ---
 
+## 🔍 4. Learning Eigenvectors Directly via Gradient Descent
+
+Can you learn/discover eigenvectors directly using PyTorch and Gradient Descent? **Yes!**
+
+### The Invariant Direction Loss
+Since an eigenvector satisfies $A \mathbf{v} = \lambda \mathbf{v}$, its direction **does not change** when transformed by $A$. Thus, $|\text{cosine\_similarity}(A \mathbf{v}, \mathbf{v})| = 1.0$.
+
+$$\text{Loss}(\mathbf{v}) = 1.0 - \left| \text{cosine\_similarity}(A \mathbf{v}, \mathbf{v}) \right|$$
+
+### Finding All $N$ Eigenvectors:
+1. **Dominant Eigenvector ($\mathbf{v}_1$)**: Unconstrained optimization of $\text{Loss}(\mathbf{v}_1)$ naturally converges to the dominant eigenvector (largest eigenvalue $\lambda_1$).
+2. **Secondary Eigenvector ($\mathbf{v}_2$)**: Optimize $\mathbf{v}_2$ while enforcing orthogonality to $\mathbf{v}_1$:
+   $$\text{Loss}_2 = \big(1.0 - |\text{CosSim}(A \mathbf{v}_2, \mathbf{v}_2)|\big) + 10.0 \cdot (\mathbf{v}_1^T \mathbf{v}_2)^2$$
+
+![Eigenvector Learning Visualization](eigenvector_learning_plot.png)
+
+---
+
 ## 📂 File Layout
 
-- [`hessian.py`](hessian.py): Clean Python script generating data, computing loss, gradient, Hessian matrix $H = \frac{1}{N} X^T X$, and eigenvalues/eigenvectors.
-- [`plot.py`](plot.py): Generates the 3D surface plot, contour maps, and optimization trajectories.
+- [`hessian.py`](hessian.py): Script generating data, computing loss, gradient, Hessian matrix $H = \frac{1}{N} X^T X$, and eigenvalues/eigenvectors.
+- [`plot.py`](plot.py): Script generating the 3D surface plot, contour maps, and optimization trajectories.
+- [`learn_eigenvectors.py`](learn_eigenvectors.py): Script demonstrating learning both eigenvectors of a 2D matrix via Gradient Descent.
+- [`plot_eigen_learning.py`](plot_eigen_learning.py): Script generating the eigenvector rotation vector field & convergence plots.
