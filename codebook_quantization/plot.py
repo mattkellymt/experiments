@@ -41,7 +41,7 @@ def main():
     with torch.no_grad():
         y_fp4 = m_fp4(x_test).float()
 
-    # Load K=512 Codebook Model
+    # Load 4-Bit Grid + K=512 Codebook Rehydrator
     cb512_path = os.path.join(script_dir, "model_codebook_9bit.pt")
     m_cb512 = RotationModel(dim=256, hidden_dim=1024).to(device)
     for name, child in m_fp32.named_children():
@@ -52,7 +52,7 @@ def main():
     m_cb512.load_state_dict(torch.load(cb512_path, weights_only=True))
     m_cb512.eval()
 
-    # Load K=1024 Codebook Model
+    # Load 4-Bit Grid + K=1024 Codebook Rehydrator
     cb1024_path = os.path.join(script_dir, "model_codebook_10bit.pt")
     m_cb1024 = RotationModel(dim=256, hidden_dim=1024).to(device)
     for name, child in m_fp32.named_children():
@@ -69,8 +69,8 @@ def main():
 
     variants = [
         ("TorchAO Native FP4 (1.41 MB)", y_fp4, "#d62728"),
-        ("Codebook K=512 (9-bit, 0.21 MB)", y_cb512, "#1f77b4"),
-        ("Codebook K=1024 (10-bit, 0.22 MB)", y_cb1024, "#2ca02c"),
+        ("4-Bit Grid + K=512 Rehydrator", y_cb512, "#1f77b4"),
+        ("4-Bit Grid + K=1024 Rehydrator", y_cb1024, "#2ca02c"),
     ]
 
     data = {}
@@ -91,7 +91,7 @@ def main():
     # -------------------------------------------------------------
     # ROW 1: SCATTER PLOTS
     # -------------------------------------------------------------
-    # Panel 1 (Row 1 Left): TorchAO FP4 vs Codebook K=512 vs Codebook K=1024 Scatter
+    # Panel 1 (Row 1 Left): TorchAO FP4 vs 4-Bit Grid + K=512 vs K=1024 Rehydrator Scatter
     ax1 = axes[0, 0]
     for label, d in data.items():
         ax1.scatter(d["rel_mag_delta"], d["cos_sims"], alpha=0.45, color=d["color"], label=f"{label} (Mean Cos: {np.mean(d['cos_sims']):.4f})", s=22)
@@ -99,7 +99,7 @@ def main():
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_var|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. K=512 & K=1024 Codebooks", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("Method Scatter: TorchAO Native FP4 vs. 4-Bit Grid + Neural Rehydrator", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 
@@ -110,7 +110,7 @@ def main():
     ax2.plot(epochs, taus, color='#9467bd', linewidth=2.5, label='Softmax Temperature (τ: 1.0 → 0.05)')
     ax2.set_xlabel("Fine-Tuning Epochs", fontsize=10, fontweight='bold')
     ax2.set_ylabel("Softmax Temperature (τ)", fontsize=10, fontweight='bold')
-    ax2.set_title("Codebook Annealing: Softmax Mixture to Hard Index Selection", fontsize=12, fontweight='bold', pad=10)
+    ax2.set_title("Codebook Annealing: Softmax Mixture to Hard Selection", fontsize=12, fontweight='bold', pad=10)
     ax2.legend(loc='upper right', frameon=True, framealpha=0.9, fontsize=9)
     ax2.grid(True, linestyle='--', alpha=0.5)
 

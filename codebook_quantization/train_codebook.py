@@ -27,7 +27,7 @@ def native_fp4_quantize_weight(weight: torch.Tensor, block_size: int = 32) -> to
 
 
 def build_codebook_model(model_fp32: nn.Module, k_codes: int = 512) -> nn.Module:
-    """Converts a standard model into a Scaled Neural Codebook Rehydration model."""
+    """Converts a standard model into a 4-Bit Grid + Dual-Codebook Neural Rehydration model."""
     m_cb = RotationModel(dim=256, hidden_dim=1024)
 
     for name, child in model_fp32.named_children():
@@ -42,14 +42,12 @@ def build_codebook_model(model_fp32: nn.Module, k_codes: int = 512) -> nn.Module
 
             if W_blocks.shape[0] >= k_codes:
                 sample_idxs = torch.randperm(W_blocks.shape[0])[:k_codes]
-                scales = torch.norm(W_blocks[sample_idxs], p=2, dim=(-2, -1), keepdim=True) / 5.0
-                cb_layer.quantizer.codebook2.data = (W_blocks[sample_idxs] / torch.clamp(scales, min=1e-6)).clone()
-                cb_layer.quantizer.codebook1.data = (W_blocks[sample_idxs] / torch.clamp(scales, min=1e-6)).clone()
+                cb_layer.quantizer.codebook2.data = W_blocks[sample_idxs].clone()
+                cb_layer.quantizer.codebook1.data = W_blocks[sample_idxs].clone()
             else:
                 idxs = torch.randint(0, W_blocks.shape[0], (k_codes,))
-                scales = torch.norm(W_blocks[idxs], p=2, dim=(-2, -1), keepdim=True) / 5.0
-                cb_layer.quantizer.codebook2.data = (W_blocks[idxs] / torch.clamp(scales, min=1e-6)).clone()
-                cb_layer.quantizer.codebook1.data = (W_blocks[idxs] / torch.clamp(scales, min=1e-6)).clone()
+                cb_layer.quantizer.codebook2.data = W_blocks[idxs].clone()
+                cb_layer.quantizer.codebook1.data = W_blocks[idxs].clone()
 
             setattr(m_cb, name, cb_layer)
 
@@ -98,7 +96,7 @@ def train_codebook_variant(model_fp32: nn.Module, x_train: torch.Tensor, y_train
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     device = torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Neural Codebook Rehydration Execution Device: {device} (Sane GEMM Memory Allocation)", flush=True)
+    print(f"4-Bit Grid + Dual-Codebook Neural Rehydration Device: {device}", flush=True)
 
     # Datasets
     x_train, y_train = generate_dataset(num_samples=1024, dim=256, seed=42)
@@ -138,13 +136,13 @@ def main():
     fp4_native_path = os.path.join(script_dir, "model_fp4_native.pt")
     torch.save(m_fp4_native.state_dict(), fp4_native_path)
 
-    # 3. Build & Fine-Tune K=512 Codebook Model (9-bit index)
-    print("3. Fine-tuning K=512 Codebook Model (9-bit index per block)...", flush=True)
+    # 3. Build & Fine-Tune 4-Bit Grid + K=512 Codebook Rehydrator
+    print("3. Fine-tuning 4-Bit Grid + K=512 Codebook Rehydrator...", flush=True)
     m_cb512 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=512, device=device)
     torch.save(m_cb512.state_dict(), os.path.join(script_dir, "model_codebook_9bit.pt"))
 
-    # 4. Build & Fine-Tune K=1024 Codebook Model (10-bit index)
-    print("4. Fine-tuning K=1024 Codebook Model (10-bit index per block)...", flush=True)
+    # 4. Build & Fine-Tune 4-Bit Grid + K=1024 Codebook Rehydrator
+    print("4. Fine-tuning 4-Bit Grid + K=1024 Codebook Rehydrator...", flush=True)
     m_cb1024 = train_codebook_variant(model_fp32, x_train, y_train, out_train_fp32, k_codes=1024, device=device)
     torch.save(m_cb1024.state_dict(), os.path.join(script_dir, "model_codebook_10bit.pt"))
 
@@ -157,25 +155,25 @@ def main():
     variants = [
         ("FP32 (Ref Ground Truth)", fp32_path, out_fp32),
         ("TorchAO Native FP4", fp4_native_path, out_native_fp4),
-        ("Codebook K=512 (9-bit Index)", os.path.join(script_dir, "model_codebook_9bit.pt"), out_cb512_hard),
-        ("Codebook K=1024 (10-bit Index)", os.path.join(script_dir, "model_codebook_10bit.pt"), out_cb1024_hard),
+        ("4-Bit Grid + Codebook K=512", os.path.join(script_dir, "model_codebook_9bit.pt"), out_cb512_hard),
+        ("4-Bit Grid + Codebook K=1024", os.path.join(script_dir, "model_codebook_10bit.pt"), out_cb1024_hard),
     ]
 
     sizes = {
         "FP32 (Ref Ground Truth)": "10.00 MB",
         "TorchAO Native FP4": "1.41 MB",
-        "Codebook K=512 (9-bit Index)": "0.21 MB",
-        "Codebook K=1024 (10-bit Index)": "0.22 MB",
+        "4-Bit Grid + Codebook K=512": "1.41 MB + NN",
+        "4-Bit Grid + Codebook K=1024": "1.41 MB + NN",
     }
 
     print("\n" + "=" * 130, flush=True)
-    print("LIGHTWEIGHT DUAL-CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS (K=1024)", flush=True)
+    print("4-BIT GRID + DUAL-CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS", flush=True)
     print("=" * 130, flush=True)
-    print(f"{'Quantization Method / Format':<32} | {'Eff. Size':<10} | {'Worst Cos Sim':<15} | {'Ref Mag':<10} | {'Var Mag':<10} | {'Mean Cos':<10}", flush=True)
+    print(f"{'Quantization Method / Format':<32} | {'Eff. Size':<12} | {'Worst Cos Sim':<15} | {'Ref Mag':<10} | {'Var Mag':<10} | {'Mean Cos':<10}", flush=True)
     print("-" * 130, flush=True)
     for label, path, out_var in variants:
         m = evaluate_predictions(out_fp32, out_var, y_test)
-        print(f"{label:<32} | {sizes[label]:<10} | {m['worst_cos_sim']:15.6f} | {m['worst_ref_mag']:10.4f} | {m['worst_var_mag']:10.4f} | {m['mean_cos_sim']:10.6f}", flush=True)
+        print(f"{label:<32} | {sizes[label]:<12} | {m['worst_cos_sim']:15.6f} | {m['worst_ref_mag']:10.4f} | {m['worst_var_mag']:10.4f} | {m['mean_cos_sim']:10.6f}", flush=True)
     print("=" * 130 + "\n", flush=True)
 
 if __name__ == "__main__":
