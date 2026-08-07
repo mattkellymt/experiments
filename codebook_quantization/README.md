@@ -6,7 +6,7 @@ Personal exploration repo implementing a custom experimental quantization paradi
 
 ## 💡 The Architecture Concept
 
-Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we represent entire $32 \times 32$ weight blocks as **discrete index pointers** ($K=256 \rightarrow$ 8 bits, $K=512 \rightarrow$ 9 bits) into a shared dual codebook!
+Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we represent entire $32 \times 32$ weight blocks as **discrete index pointers** ($K=512 \rightarrow$ 9 bits, $K=1024 \rightarrow$ 10 bits) into a shared dual codebook!
 
 ```
                   OFFLINE TRAINING & ANNEALING PHASE
@@ -21,7 +21,7 @@ Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we re
 
                   INFERENCE TIME LAYER REHYDRATION
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  1. Store ONLY 8-bit / 9-bit block indices k and Codebooks (0.21 MB).     │
+│  1. Store ONLY 9-bit / 10-bit block indices k and Codebooks (0.22 MB).    │
 │  2. Rehydrate Layer L: W_hat_L = S_block * Codebook2[k_blocks].          │
 │  3. Execute forward pass: Y = X @ W_hat_L.                               │
 │  4. Discard W_hat_L from VRAM before moving to Layer L+1!               │
@@ -30,14 +30,14 @@ Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we re
 
 ---
 
-## 📊 Benchmark Results: TorchAO Native FP4 vs. K=256 & K=512 Codebooks
+## 📊 Benchmark Results: TorchAO Native FP4 vs. K=512 & K=1024 Codebooks
 
 | Quantization Method | Representation | Storage Footprint | Effective Bits / Param | Worst Cos Sim | Ref Mag | Variant Mag | Mean Cos Sim | Execution Time |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **FP32 (Ref Ground Truth)** | 32-Bit Float | `10.00 MB` | `32.0 bits` | `1.000000` | `16.0427` | `16.0427` | `1.000000` | — |
 | **TorchAO Native FP4** | 4-Bit Micro-Scale | `1.41 MB` | `4.0 bits` | **`0.988580`** | `12.8681` | `12.7213` | **`0.991338`** | Instant |
-| **Codebook K=256 (8-bit Index)** | 8-Bit Index / Block | `0.20 MB` | `0.78 bits` | `0.786355` | `14.5336` | `12.0069` | `0.843481` | 2 seconds |
-| **Codebook K=512 (9-bit Index)** | **9-Bit Index / Block** | **`0.21 MB`** | **`0.88 bits`** | **`0.861997`** | `13.8130` | `13.1562` | **`0.903540`** | **5 seconds $\star$** |
+| **Codebook K=512 (9-bit Index)** | 9-Bit Index / Block | `0.21 MB` | `0.88 bits` | `0.864896` | `14.1975` | `13.2633` | `0.903007` | 2 seconds |
+| **Codebook K=1024 (10-bit Index)** | **10-Bit Index / Block** | **`0.22 MB`** | **`0.97 bits`** | **`0.933949`** | `13.7431` | `12.7341` | **`0.960992` $\star$** | **5 seconds** |
 
 ---
 
@@ -45,7 +45,7 @@ Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we re
 
 ![Codebook Analysis Plot](codebook_analysis_plot.png)
 
-- **Row 1 (Scatter Plots)**: Compares **Relative Magnitude Error (%) vs. Cosine Similarity** for TorchAO FP4 vs. $K=256$ & $K=512$ Codebooks (Left) and Temperature Annealing Curve $\tau$ (Right).
+- **Row 1 (Scatter Plots)**: Compares **Relative Magnitude Error (%) vs. Cosine Similarity** for TorchAO FP4 vs. $K=512$ & $K=1024$ Codebooks (Left) and Temperature Annealing Curve $\tau$ (Right).
 - **Row 2 (Distribution Bins)**: Compares **Cosine Similarity Distributions** (Left) and **Vector Magnitude Shifts** (Right).
 
 ---
@@ -53,5 +53,5 @@ Instead of quantizing individual weight numbers into 4-bit or 8-bit grids, we re
 ## 📂 File Layout
 
 - [`model.py`](model.py): Neural network architecture, `DualCodebookQuantizer` module with per-block scale factors and fast GEMM matrix products.
-- [`train_codebook.py`](train_codebook.py): FP32 reference model training, temperature-annealed codebook fine-tuning ($K=256$ and $K=512$) with Apple Silicon MPS GPU cache management.
+- [`train_codebook.py`](train_codebook.py): FP32 reference model training, temperature-annealed codebook fine-tuning ($K=512$ and $K=1024$) with Apple Silicon MPS GPU cache management.
 - [`plot.py`](plot.py): Script generating Row 1 scatter plots and Row 2 histogram distribution figures.
