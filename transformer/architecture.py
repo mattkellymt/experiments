@@ -6,10 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
-if __package__:
-    from .optimizers import Adam, Muon
-else:
-    from optimizers import Adam, Muon
+from optimizers import Adam, Muon
 
 
 def create_param(shape, dtype, device):
