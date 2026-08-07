@@ -1,6 +1,6 @@
 # GPTQ (Hessian-Guided) Quantization Experiments
 
-Personal exploration repo analyzing post-training quantization using **GPTQ (Generalized Post-Training Quantization)** with Inverse Hessian nudging across **BF16**, **FP8**, and **FP4**.
+Personal exploration repo analyzing post-training quantization comparing **Naive Round-To-Nearest (RTN)** vs. **GPTQ (Hessian-Guided Error Nudging)** across **BF16**, **FP8**, and **FP4**.
 
 ---
 
@@ -26,25 +26,30 @@ For each column $q$ in the weight matrix:
 
 ---
 
-## 📊 Results Breakdown
+## 📊 Quantization Method Comparison: Naive RTN vs. GPTQ Hessian Nudging
 
-| Variant | Precision | Effective Weight Size | Memory Reduction | Worst Cos Sim | Ref Mag | Variant Mag | Mean Cos Sim |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FP32 (Ref)** | `32-bit` | `10.00 MB` | `0.0%` | `1.000000` | `16.2210` | `16.2210` | `1.000000` |
-| **BF16** | `16-bit` | `5.00 MB` | `50.0%` | `0.999985` | `13.7367` | `13.7547` | `0.999989` |
-| **GPTQ-FP8** | `8-bit` | `2.50 MB` | `75.0%` | `0.998483` | `17.3092` | `17.3167` | `0.999056` |
-| **GPTQ-FP4** | `4-bit` | `1.41 MB` | `85.9%` | `0.975038` | `14.4973` | `14.4478` | `0.984627` |
+| Precision Variant | Quantization Method | Effective Weight Size | Worst Cosine Similarity | Ref Magnitude | Variant Magnitude | Mean Cosine Similarity |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **FP32 (Ref)** | Reference | `10.0 MB` | `1.000000` | `16.2210` | `16.2210` | `1.000000` |
+| **BF16** | IEEE Truncation | `5.0 MB` | `0.999985` | `13.7367` | `13.7547` | `0.999989` |
+| **Naive FP8 (RTN)** | Round-to-Nearest | `2.5 MB` | `0.999204` | `17.0197` | `17.0272` | `0.999412` |
+| **GPTQ FP8 (Hessian)** | Hessian Nudged | `2.5 MB` | `0.998483` | `17.3092` | `17.3167` | `0.999056` |
+| **Naive FP4 (RTN)** | Round-to-Nearest | `1.4 MB` | `0.987285` | `13.7367` | `13.5644` | `0.990556` |
+| **GPTQ FP4 (Hessian)** | Hessian Nudged | `1.4 MB` | `0.975038` | `14.4973` | `14.4478` | `0.984627` |
 
 ---
 
-## 🖼️ GPTQ Quantization Analysis Plot
+## 🖼️ Comparative Analysis Plot (Naive Rounding vs. GPTQ Hessian Nudging)
 
 ![GPTQ Analysis Plot](gptq_analysis_plot.png)
+
+- **Row 1 (Scatter Plots)**: Compares **Relative Magnitude Error (%) vs Cosine Similarity** for Naive Rounding vs GPTQ Hessian Nudging.
+- **Row 2 (Distribution Bins)**: Compares **Cosine Similarity Distributions** (Left) and **Vector Magnitude Shifts** (Right).
 
 ---
 
 ## 📂 File Layout
 
 - [`model.py`](model.py): Neural network model architecture & dataset generator.
-- [`gptq_quant.py`](gptq_quant.py): FP32 training, BF16 conversion, and GPTQ quantization loops for FP8 and FP4.
-- [`plot.py`](plot.py): Generates scatter plots and probability density distributions.
+- [`gptq_quant.py`](gptq_quant.py): FP32 training, BF16 conversion, Naive RTN quantization, and GPTQ Hessian loops.
+- [`plot.py`](plot.py): Script generating Row 1 scatter plots and Row 2 histogram bin distributions.
