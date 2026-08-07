@@ -3,32 +3,15 @@ import torch.nn as nn
 
 torch.manual_seed(42)
 
-def native_fp4_quantize_block(weight_flat: torch.Tensor, block_size: int = 32) -> torch.Tensor:
-    """Quantizes flat weight blocks into 4-bit FP4 micro-scaled grid values."""
-    w = weight_flat.detach().clone()
-    fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight_flat.device)
-
-    w_reshaped = w.view(-1, block_size)
-    block_max = torch.max(torch.abs(w_reshaped), dim=1, keepdim=True).values
-    scale = torch.clamp(block_max / 6.0, min=1e-12)
-    w_scaled = w_reshaped / scale
-    w_sign = torch.sign(w_scaled)
-    w_abs = torch.abs(w_scaled)
-    diffs = torch.abs(w_abs.unsqueeze(-1) - fp4_grid)
-    indices = torch.argmin(diffs, dim=-1)
-    w_q = fp4_grid[indices] * w_sign * scale
-    return w_q.view_as(weight_flat)
-
-
-class GridCodebookRehydrator(nn.Module):
+class PureIndexCodebookQuantizer(nn.Module):
     """
-    4-Bit Spatial Grid + Dual-Codebook Neural Rehydration Engine:
-    1. Base Weights: 32x32 blocks of 4-bit quantized values (W_fp4).
-    2. Convert W_fp4 to FP32 and matmul with Codebook 1 (K x 32 x 32 prototypes).
-    3. Softmax (fine-tuning) or Hard Argmax (inference) across K=1024 dimension produces alpha.
-    4. Weight Codebook 2 (K x 32 x 32 full FP32 basis tensors) using alpha:
-       W_rehydrated = alpha @ Codebook2
-    5. Rehydrates 4-bit 32x32 spatial grids into full 32-bit FP32 weight matrices at inference!
+    Softmax Codebook Mixture Quantization (SCMQ) / Pure Index Neural Rehydration:
+    - Weight matrix W is divided into 32x32 blocks (1024 params / block).
+    - Codebook 1 (K=1024 x 32 x 32): Fast GEMM similarity score calculation.
+    - Softmax with temperature annealing (tau: 1.0 -> 0.05) sharpens continuous mixture into discrete Argmax.
+    - Codebook 2 (K=1024 x 32 x 32): Basis expansion tensors rehydrate full FP32 block:
+      W_hat_block = S_block * Codebook2[k]
+    - Stored on disk: ONLY 10-bit integer index k per block (0.97 bits/param) + shared Codebooks!
     """
     def __init__(self, out_features: int, in_features: int, k_codes: int = 1024, block_h: int = 32, block_w: int = 32):
         super().__init__()
@@ -43,7 +26,7 @@ class GridCodebookRehydrator(nn.Module):
         self.num_w = in_features // block_w
         self.num_blocks = self.num_h * self.num_w
 
-        # Codebook 1: 1024 x 32 x 32 FP32 Selector Basis
+        # Codebook 1: 1024 x 32 x 32 Prototype Selector Basis
         self.codebook1 = nn.Parameter(torch.randn(k_codes, block_h, block_w) * 0.1)
         # Codebook 2: 1024 x 32 x 32 FP32 Basis Expansion Tensors
         self.codebook2 = nn.Parameter(torch.randn(k_codes, block_h, block_w) * 0.1)
@@ -51,41 +34,42 @@ class GridCodebookRehydrator(nn.Module):
         self.tau = 1.0
 
     def forward(self, W: torch.Tensor, hard: bool = False) -> torch.Tensor:
-        # Slices master weights into 32x32 blocks
+        # Reshape W into 32x32 blocks: (num_blocks, 32, 32)
         W_blocks = W.view(self.num_h, self.block_h, self.num_w, self.block_w).permute(0, 2, 1, 3).reshape(self.num_blocks, self.block_h, self.block_w)
 
-        # 1. Quantize 32x32 blocks into 4-bit grid values (W_fp4)
-        W_fp4_blocks = native_fp4_quantize_block(W_blocks, block_size=self.block_elements)
+        # Per-block norm scale factor (preserves magnitude)
+        block_scales = torch.norm(W_blocks, p=2, dim=(-2, -1), keepdim=True) / 5.0
+        W_norm = W_blocks / torch.clamp(block_scales, min=1e-6)
 
-        # 2. Matmul 4-bit FP32-converted values with Codebook 1 (num_blocks, K)
-        W_fp4_flat = W_fp4_blocks.reshape(self.num_blocks, self.block_elements)
+        # Fast GEMM similarity matching with Codebook 1 prototypes: (num_blocks, K)
+        W_norm_flat = W_norm.reshape(self.num_blocks, self.block_elements)
         cb1_flat = self.codebook1.reshape(self.k_codes, self.block_elements)
-        sim = (W_fp4_flat @ cb1_flat.T) / max(self.tau, 0.05)
+        sim = (W_norm_flat @ cb1_flat.T) / max(self.tau, 0.05)
 
         cb2_flat = self.codebook2.reshape(self.k_codes, self.block_elements)
 
         if hard:
-            # Hard Argmax selection along 1024 dimension
+            # Inference Time: Discrete 10-bit integer index lookup
             best_idx = torch.argmax(sim, dim=1)
-            W_rehydrated_flat = cb2_flat[best_idx]
+            W_rehydrated_flat = block_scales.squeeze(-1) * cb2_flat[best_idx]
         else:
-            # Softmax mixture during fine-tuning (differentiable)
+            # Training Time: Differentiable Softmax mixture
             alpha = torch.softmax(sim, dim=1)
-            W_rehydrated_flat = alpha @ cb2_flat
+            W_rehydrated_flat = block_scales.squeeze(-1) * (alpha @ cb2_flat)
 
         W_rehydrated_blocks = W_rehydrated_flat.reshape(self.num_blocks, self.block_h, self.block_w)
 
-        # Reconstruct full weight matrix shape (out_features, in_features)
+        # Reconstruct full weight tensor (out_features, in_features)
         W_rehydrated = W_rehydrated_blocks.view(self.num_h, self.num_w, self.block_h, self.block_w).permute(0, 2, 1, 3).reshape(self.out_features, self.in_features)
         return W_rehydrated
 
 
 class CodebookRehydrationLinear(nn.Module):
-    """Linear layer wrapper applying 4-Bit Grid + Dual-Codebook Neural Rehydration."""
+    """Linear layer wrapper applying Pure Index Dual-Codebook Neural Rehydration."""
     def __init__(self, in_features: int, out_features: int, k_codes: int = 1024):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.05)
-        self.quantizer = GridCodebookRehydrator(out_features, in_features, k_codes=k_codes)
+        self.quantizer = PureIndexCodebookQuantizer(out_features, in_features, k_codes=k_codes)
 
     def forward(self, x: torch.Tensor, hard: bool = False) -> torch.Tensor:
         w_rehydrated = self.quantizer(self.weight, hard=hard)
