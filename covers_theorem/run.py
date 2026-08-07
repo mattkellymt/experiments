@@ -278,7 +278,7 @@ def run_dynamic_highd_experiment():
     ax4.set_yticklabels(['Null'] + [f"S{k}" for k in range(1, K)])
 
     plt.tight_layout()
-    output_path = os.path.join(os.path.dirname(__file__), "dynamic_highd.png")
+    output_path = os.path.join(os.path.dirname(__file__), "plot.png")
     plt.savefig(output_path, dpi=300)
     print(f"Visual graphic saved successfully to {output_path}")
 
