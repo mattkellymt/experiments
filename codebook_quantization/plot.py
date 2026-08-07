@@ -33,15 +33,19 @@ def main():
 
     mag_ref = torch.norm(y_ref, p=2, dim=1).cpu().numpy()
 
-    # Load Pure Index Codebook Model (K=1024)
+    # Load Single Codebook Model (K=1024)
     cb1024_path = os.path.join(script_dir, "model_codebook_10bit.pt")
+    state_dict = torch.load(cb1024_path, weights_only=True)
+
     m_cb1024 = RotationModel(dim=256, hidden_dim=1024).to(device)
     for name, child in m_fp32.named_children():
         if isinstance(child, nn.Linear):
-            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=1024).to(device)
+            k_shape = state_dict[f"{name}.quantizer.codebook"].shape[0]
+            cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=k_shape).to(device)
+            cb_layer.quantizer.codebook = nn.Parameter(torch.randn(k_shape, 32, 32, device=device))
             setattr(m_cb1024, name, cb_layer)
 
-    m_cb1024.load_state_dict(torch.load(cb1024_path, weights_only=True))
+    m_cb1024.load_state_dict(state_dict)
     m_cb1024.eval()
 
     with torch.no_grad():
@@ -58,11 +62,11 @@ def main():
     # -------------------------------------------------------------
     # Panel 1 (Row 1 Left): Relative Magnitude Error vs Cosine Similarity
     ax1 = axes[0, 0]
-    ax1.scatter(rel_mag_delta, cos_sims, alpha=0.55, color="#1f77b4", label=f"Pure Index K=1024 (Mean Cos: {np.mean(cos_sims):.4f})", s=28)
+    ax1.scatter(rel_mag_delta, cos_sims, alpha=0.55, color="#1f77b4", label=f"Single Codebook K=1024 (Mean Cos: {np.mean(cos_sims):.4f})", s=28)
     ax1.axvline(0, color='gray', linestyle='--', alpha=0.7)
     ax1.set_xlabel("Relative Magnitude Error (%): (||y_rehydrated|| - ||y_ref||) / ||y_ref||", fontsize=10, fontweight='bold')
     ax1.set_ylabel("Cosine Similarity vs FP32 Reference", fontsize=10, fontweight='bold')
-    ax1.set_title("Pure Index Rehydration: Relative Magnitude Error vs. Cosine Similarity", fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title("Single Codebook Rehydration: Relative Magnitude Error vs. Cosine Similarity", fontsize=12, fontweight='bold', pad=10)
     ax1.legend(loc='lower left', frameon=True, framealpha=0.9, fontsize=9)
     ax1.grid(True, linestyle='--', alpha=0.5)
 

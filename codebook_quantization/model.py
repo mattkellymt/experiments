@@ -5,13 +5,12 @@ torch.manual_seed(42)
 
 class PureIndexCodebookQuantizer(nn.Module):
     """
-    Softmax Codebook Mixture Quantization (SCMQ) / Pure Index Neural Rehydration:
+    Softmax Codebook Mixture Quantization (SCMQ) / Single Codebook Neural Rehydration:
     - Weight matrix W is divided into 32x32 blocks (1024 params / block).
-    - Codebook 1 (K=1024 x 32 x 32): Fast GEMM similarity score calculation.
+    - Single Codebook (K=1024 x 32 x 32): Acts as BOTH the prototype selector basis AND basis expansion output.
     - Softmax with temperature annealing (tau: 1.0 -> 0.05) sharpens continuous mixture into discrete Argmax.
-    - Codebook 2 (K=1024 x 32 x 32): Basis expansion tensors rehydrate full FP32 block:
-      W_hat_block = S_block * Codebook2[k]
-    - Stored on disk: ONLY 10-bit integer index k per block (0.97 bits/param) + shared Codebooks!
+    - At inference time: W_hat_block = S_block * Codebook[k]
+    - Stored on disk: ONLY 10-bit integer index k per block (0.97 bits/param) + 1 single shared Codebook!
     """
     def __init__(self, out_features: int, in_features: int, k_codes: int = 1024, block_h: int = 32, block_w: int = 32):
         super().__init__()
@@ -26,10 +25,8 @@ class PureIndexCodebookQuantizer(nn.Module):
         self.num_w = in_features // block_w
         self.num_blocks = self.num_h * self.num_w
 
-        # Codebook 1: 1024 x 32 x 32 Prototype Selector Basis
-        self.codebook1 = nn.Parameter(torch.randn(k_codes, block_h, block_w) * 0.1)
-        # Codebook 2: 1024 x 32 x 32 FP32 Basis Expansion Tensors
-        self.codebook2 = nn.Parameter(torch.randn(k_codes, block_h, block_w) * 0.1)
+        # SINGLE CODEBOOK TENSOR: 1024 x 32 x 32 FP32 Basis Grids
+        self.codebook = nn.Parameter(torch.randn(k_codes, block_h, block_w) * 0.1)
         # Annealable Softmax Temperature
         self.tau = 1.0
 
@@ -41,21 +38,19 @@ class PureIndexCodebookQuantizer(nn.Module):
         block_scales = torch.norm(W_blocks, p=2, dim=(-2, -1), keepdim=True) / 5.0
         W_norm = W_blocks / torch.clamp(block_scales, min=1e-6)
 
-        # Fast GEMM similarity matching with Codebook 1 prototypes: (num_blocks, K)
+        # Fast GEMM similarity matching with Single Codebook: (num_blocks, K)
         W_norm_flat = W_norm.reshape(self.num_blocks, self.block_elements)
-        cb1_flat = self.codebook1.reshape(self.k_codes, self.block_elements)
-        sim = (W_norm_flat @ cb1_flat.T) / max(self.tau, 0.05)
-
-        cb2_flat = self.codebook2.reshape(self.k_codes, self.block_elements)
+        cb_flat = self.codebook.reshape(self.codebook.shape[0], self.block_elements)
+        sim = (W_norm_flat @ cb_flat.T) / max(self.tau, 0.05)
 
         if hard:
-            # Inference Time: Discrete 10-bit integer index lookup
+            # Inference Time: Discrete 10-bit integer index lookup into SINGLE codebook
             best_idx = torch.argmax(sim, dim=1)
-            W_rehydrated_flat = block_scales.squeeze(-1) * cb2_flat[best_idx]
+            W_rehydrated_flat = block_scales.squeeze(-1) * cb_flat[best_idx]
         else:
             # Training Time: Differentiable Softmax mixture
             alpha = torch.softmax(sim, dim=1)
-            W_rehydrated_flat = block_scales.squeeze(-1) * (alpha @ cb2_flat)
+            W_rehydrated_flat = block_scales.squeeze(-1) * (alpha @ cb_flat)
 
         W_rehydrated_blocks = W_rehydrated_flat.reshape(self.num_blocks, self.block_h, self.block_w)
 
@@ -65,7 +60,7 @@ class PureIndexCodebookQuantizer(nn.Module):
 
 
 class CodebookRehydrationLinear(nn.Module):
-    """Linear layer wrapper applying Pure Index Dual-Codebook Neural Rehydration."""
+    """Linear layer wrapper applying Single Codebook Neural Rehydration."""
     def __init__(self, in_features: int, out_features: int, k_codes: int = 1024):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.05)

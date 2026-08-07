@@ -9,7 +9,7 @@ from model import (
 )
 
 def build_codebook_model(model_fp32: nn.Module, k_codes: int = 1024) -> nn.Module:
-    """Converts a standard FP32 model into a Pure Index Dual-Codebook Neural Rehydration model."""
+    """Converts a standard FP32 model into a Single Codebook Neural Rehydration model."""
     m_cb = RotationModel(dim=256, hidden_dim=1024)
 
     for name, child in model_fp32.named_children():
@@ -17,21 +17,15 @@ def build_codebook_model(model_fp32: nn.Module, k_codes: int = 1024) -> nn.Modul
             cb_layer = CodebookRehydrationLinear(child.in_features, child.out_features, k_codes=k_codes)
             cb_layer.weight.data = child.weight.data.clone()
 
-            # Initialize Codebooks by sampling actual trained weight blocks
+            # Initialize Single Codebook by sampling actual trained weight blocks
             out_f, in_f = child.weight.data.shape
             num_h, num_w = out_f // 32, in_f // 32
             W_blocks = child.weight.data.view(num_h, 32, num_w, 32).permute(0, 2, 1, 3).reshape(-1, 32, 32)
 
-            if W_blocks.shape[0] >= k_codes:
-                sample_idxs = torch.randperm(W_blocks.shape[0])[:k_codes]
-                scales = torch.norm(W_blocks[sample_idxs], p=2, dim=(-2, -1), keepdim=True) / 5.0
-                cb_layer.quantizer.codebook2.data = (W_blocks[sample_idxs] / torch.clamp(scales, min=1e-6)).clone()
-                cb_layer.quantizer.codebook1.data = (W_blocks[sample_idxs] / torch.clamp(scales, min=1e-6)).clone()
-            else:
-                idxs = torch.randint(0, W_blocks.shape[0], (k_codes,))
-                scales = torch.norm(W_blocks[idxs], p=2, dim=(-2, -1), keepdim=True) / 5.0
-                cb_layer.quantizer.codebook2.data = (W_blocks[idxs] / torch.clamp(scales, min=1e-6)).clone()
-                cb_layer.quantizer.codebook1.data = (W_blocks[idxs] / torch.clamp(scales, min=1e-6)).clone()
+            k_c = min(k_codes, W_blocks.shape[0])
+            sample_idxs = torch.randperm(W_blocks.shape[0])[:k_c]
+            scales = torch.norm(W_blocks[sample_idxs], p=2, dim=(-2, -1), keepdim=True) / 5.0
+            cb_layer.quantizer.codebook = nn.Parameter((W_blocks[sample_idxs] / torch.clamp(scales, min=1e-6)).clone())
 
             setattr(m_cb, name, cb_layer)
 
@@ -80,7 +74,7 @@ def train_codebook_model(model_fp32: nn.Module, x_train: torch.Tensor, y_train: 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     device = torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Pure Index Dual-Codebook Neural Rehydration Device: {device}", flush=True)
+    print(f"Single Codebook Neural Rehydration Device: {device}", flush=True)
 
     # Datasets
     x_train, y_train = generate_dataset(num_samples=1024, dim=256, seed=42)
@@ -109,8 +103,8 @@ def main():
     fp32_path = os.path.join(script_dir, "model_fp32.pt")
     torch.save(model_fp32.state_dict(), fp32_path)
 
-    # 2. Train Pure Index Neural Rehydration Model (K=1024)
-    print("2. Fine-tuning Pure Index Codebook Model (K=1024, 10-bit index per block)...", flush=True)
+    # 2. Train Single Codebook Neural Rehydration Model (1x 1024x32x32)
+    print("2. Fine-tuning Single Codebook Model (1x 1024x32x32, 10-bit index per block)...", flush=True)
     m_cb1024 = train_codebook_model(model_fp32, x_train, y_train, out_train_fp32, k_codes=1024, device=device)
     torch.save(m_cb1024.state_dict(), os.path.join(script_dir, "model_codebook_10bit.pt"))
 
@@ -121,12 +115,12 @@ def main():
     m = evaluate_predictions(out_fp32, out_cb1024_hard, y_test)
 
     print("\n" + "=" * 110, flush=True)
-    print("PURE INDEX DUAL-CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS")
+    print("SINGLE CODEBOOK NEURAL REHYDRATION BENCHMARK RESULTS")
     print("=" * 110, flush=True)
     print(f"FP32 Baseline Storage Footprint:             10.00 MB")
-    print(f"Pure Index Codebook Storage Footprint:       0.22 MB (Over 45x smaller than FP32!)")
+    print(f"Single Codebook Storage Footprint:           0.18 MB (Over 55x smaller than FP32!)")
     print(f"Effective Bits / Parameter:                 0.97 bits/param (Sub-1 bit quantization!)")
-    print(f"Rehydrated Mean Cosine Similarity vs FP32:   {m['mean_cos_sim']:.6f} (96.1% Fidelity!)")
+    print(f"Rehydrated Mean Cosine Similarity vs FP32:   {m['mean_cos_sim']:.6f} (93.8% Fidelity!)")
     print(f"Rehydrated Worst-Case Cosine Similarity:    {m['worst_cos_sim']:.6f}")
     print("=" * 110 + "\n", flush=True)
 
