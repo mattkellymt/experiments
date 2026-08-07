@@ -1,56 +1,44 @@
-# Modern High-Dimensional Dynamic On-The-Fly Cluster Experiment
+# Unsupervised InfoNCE Self-Supervised Learning Experiment (ZERO LABELS)
 
-This experiment implements **Dynamic On-The-Fly Data Generation**, **Balanced Mini-Batch Training**, and **Modern 2D Representation Learning (Supervised Contrastive Learning / InfoNCE)** in an 8-dimensional space ($d_{\text{in}} = 8$):
-
----
-
-## 1. System Specifications
-
-* **Number of Classes ($K$):** $K = 8$ (Power of 2: $2^3 = 8$).
-* **Input Feature Dimension ($d_{\text{in}}$):** $d_{\text{in}} = 8$ dimensions.
-* **On-The-Fly Dynamic Generation:** No pre-stored static dataset array. Class centroids $c_k \in \mathbb{R}^8 \sim \mathcal{N}(0, 3.0^2)$ and standard deviations $\sigma_k \in \mathbb{R}^8 \sim |\mathcal{N}(0.6, 0.25)|$ are stored in memory. Mini-batches are generated dynamically on demand.
-* **Balanced Batching Strategy:** Batch size = $K = 8$ (exactly 1 instance per class per mini-batch).
-* **Dynamically Generated Test Set:** $N_{\text{test}} = 8 \times 32 = 256$ samples generated on the fly.
+This script implements **Pure Unsupervised InfoNCE (SimCLR-Style)** in PyTorch on dynamically generated 8D Gaussian clusters ($K = 8$).
 
 ---
 
-## 2. Dynamic Training Dynamics Progression
+## 1. How Unsupervised InfoNCE Works (Zero Human Labels)
 
-| Step Range | Dynamic Mini-Batch Loss | Dynamic Test Accuracy (%) | Training State |
-| :---: | :---: | :---: | :--- |
-| **Step 1** | 2.1178 | 38.3% | Initial state |
-| **Step 10** | 0.0722 | **100.0%** | Rapid convergence |
-| **Step 20** | 0.0028 | **100.0%** | Loss target threshold met (< 0.005) |
-| **Step 50** | 0.0006 | **100.0%** | High precision stability |
-| **Step 100** | 0.0005 | **100.0%** | Final convergence plateau |
-
----
-
-## 3. Modern 2D Dimensionality Reduction & Representation Learning
-
-Instead of legacy linear projections (like PCA), we implemented two state-of-the-art representation visualization techniques:
-
-1. **Modern Supervised Contrastive / Parametric 2D Latent Representation Encoder (SupCon / InfoNCE):**
-   * A neural network encoder $E_\theta: \mathbb{R}^8 \rightarrow \mathbb{S}^1$ trained using **Supervised Contrastive Loss (InfoNCE)**.
-   * Maps 8D input clusters onto a normalized 2D unit circle ($\mathbb{S}^1$), pulling instances of the same class into tight 2D clusters while pushing different classes far apart.
-2. **t-SNE (t-Distributed Stochastic Neighbor Embedding):**
-   * Non-linear manifold learning projecting the 8D overlapping Gaussian clusters into 2D.
+1. **Input:** High-dimensional 8D data points $x_i \in \mathbb{R}^8$. **NO class labels $y_i$ are provided during pre-training.**
+2. **Data Augmentations:** For every sample $x_i$, generate 2 augmented views:
+   $$x_i^{(1)} = x_i + \delta_1, \quad x_i^{(2)} = x_i + \delta_2 \quad (\delta \sim \mathcal{N}(0, \sigma_{\text{aug}}^2))$$
+3. **SimCLR-Style InfoNCE Loss:**
+   $$\mathcal{L}_{\text{InfoNCE}} = -\log \frac{\exp(\text{sim}(z_i^{(1)}, z_i^{(2)}) / \tau)}{\sum_{k \neq i} \exp(\text{sim}(z_i^{(1)}, z_k) / \tau)}$$
+   * **Pulls** positive augmented views of the same sample together.
+   * **Pushes** negative samples in the mini-batch apart uniformly across the 2D unit circle ($\mathbb{S}^1$).
 
 ---
 
-## 4. Visual Graphic
+## 2. Results & Linear Probing Evaluation
 
-![Dynamic High-D Story Graphic](dynamic_highd_story.png)
+* **Pre-Training Labels Used:** **`0 (Zero Human Labels)`**
+* **Pre-Training Steps:** 300 steps on dynamic batches of size 32.
+* **Linear Probe Test Accuracy on Frozen Features:** **`100.00%`** (256/256 correct classifications).
+* **Self-Discovered Structure:** InfoNCE automatically organized the 8 classes into 8 perfectly isolated, equiangular clusters around the 2D unit circle!
 
-- **Panel 1:** Smooth dynamic training dynamics showing Cross-Entropy Loss reduction (Red curve) and Test Accuracy growth (Cyan dashed curve jumping to 100.0%).
-- **Panel 2:** t-SNE 2D manifold projection of the raw 8D input clusters.
-- **Panel 3:** **Modern Supervised Contrastive 2D Latent Unit Circle (InfoNCE)** showing the 8 classes cleanly organized around a 2D hypersphere.
-- **Panel 4:** Confusion matrix on 256 dynamically sampled unseen test points (100.00% Test Acc).
+---
+
+## 3. Visual Graphic
+
+![Unsupervised InfoNCE Visual Graphic](infonce_unsupervised_story.png)
+
+- **Panel 1:** Unsupervised InfoNCE loss reduction curve during pre-training.
+- **Panel 2:** t-SNE 2D manifold projection of raw 8D input space before pre-training.
+- **Panel 3:** **Self-Discovered 2D Latent Representation (Zero Labels!)** showing the 8 classes naturally organized into 8 distinct clusters around the unit circle.
+- **Panel 4:** Linear Probe confusion matrix on frozen unsupervised features (**100.00% Test Accuracy**).
 
 ---
 
 ## Files
 
-- [`dynamic_highd_experiment.py`](dynamic_highd_experiment.py) — Python script for dynamic on-the-fly 8D experiment
-- [`dynamic_highd_story.png`](dynamic_highd_story.png) — Generated 4-panel visual graphic
-- [`README.md`](README.md) — Experiment documentation report
+- [`infonce_unsupervised_demo.py`](infonce_unsupervised_demo.py) — Pure Unsupervised InfoNCE PyTorch script
+- [`infonce_unsupervised_story.png`](infonce_unsupervised_story.png) — Generated visual graphic
+- [`dynamic_highd_experiment.py`](dynamic_highd_experiment.py) — Supervised dynamic high-D script
+- [`README.md`](README.md) — Documentation report
