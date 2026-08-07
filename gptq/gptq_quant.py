@@ -8,7 +8,6 @@ def naive_quantize_weight(weight: torch.Tensor, format_type: str = "fp8", block_
     w = weight.detach().clone().float()
     fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
     orig_shape = w.shape
-    in_features = orig_shape[1]
 
     if format_type == "fp8":
         row_max = torch.max(torch.abs(w), dim=1, keepdim=True).values
@@ -30,12 +29,12 @@ def naive_quantize_weight(weight: torch.Tensor, format_type: str = "fp8", block_
         raise ValueError(f"Unknown format: {format_type}")
 
 
-def gptq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, format_type: str = "fp8", block_size: int = 32) -> torch.Tensor:
+def gptq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, format_type: str = "fp8", block_size: int = 32, damping: float = 0.01) -> torch.Tensor:
     """
-    GPTQ Quantization with Inverse Hessian Nudging:
+    GPTQ Quantization with Damped Inverse Hessian Nudging:
     1. Computes Hessian H = 1/M * X^T @ X from calibration activations X.
-    2. Inverts H to get H_inv.
-    3. Quantizes columns sequentially while nudging remaining columns via H_inv.
+    2. Applies damping H += damping * mean(diag(H)) * I for numerical stability.
+    3. Inverts H to get H_inv and nudges unquantized columns inside each block.
     """
     w_gptq = weight.detach().clone().float()
     X = X_activations.detach().float()
@@ -43,7 +42,7 @@ def gptq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, forma
 
     H = (1.0 / M) * (X.T @ X)
     diag_mean = torch.mean(torch.diag(H))
-    H += 1e-4 * diag_mean * torch.eye(in_features, device=weight.device)
+    H += damping * diag_mean * torch.eye(in_features, device=weight.device)
     H_inv = torch.linalg.inv(H)
 
     fp4_grid = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=weight.device)
@@ -85,38 +84,27 @@ def gptq_quantize_layer(weight: torch.Tensor, X_activations: torch.Tensor, forma
 def apply_quantization_to_model(model: nn.Module, X_calib: torch.Tensor, format_type: str, use_gptq: bool = True) -> nn.Module:
     model_quant = RotationModel(dim=256, hidden_dim=1024)
     model_quant.load_state_dict(model.state_dict())
+    model_quant.eval()
 
     if not use_gptq:
-        for name, module in model_quant.named_modules():
+        for module in model_quant.modules():
             if isinstance(module, nn.Linear):
                 module.weight.data = naive_quantize_weight(module.weight.data, format_type=format_type)
-        model_quant.eval()
         return model_quant
 
-    # GPTQ Path
-    activations = {}
-    def make_hook(name):
-        def hook(module, input, output):
-            activations[name] = input[0].detach()
-        return hook
+    # Sequential Layer-by-Layer GPTQ with activation propagation
+    curr_calib = X_calib.clone().float()
 
-    hooks = []
-    for name, module in model.named_modules():
+    for name, module in model_quant.named_children():
         if isinstance(module, nn.Linear):
-            hooks.append(module.register_forward_hook(make_hook(name)))
+            w = module.weight.data
+            module.weight.data = gptq_quantize_layer(w, curr_calib, format_type=format_type)
+            with torch.no_grad():
+                curr_calib = module(curr_calib)
+        else:
+            with torch.no_grad():
+                curr_calib = module(curr_calib)
 
-    with torch.no_grad():
-        model(X_calib)
-
-    for h in hooks:
-        h.remove()
-
-    for name, module in model_quant.named_modules():
-        if isinstance(module, nn.Linear):
-            X_act = activations[name]
-            module.weight.data = gptq_quantize_layer(module.weight.data, X_act, format_type=format_type)
-
-    model_quant.eval()
     return model_quant
 
 
@@ -151,7 +139,6 @@ def main():
 
     fp32_path = os.path.join(script_dir, "model_fp32.pt")
     torch.save(model_fp32.state_dict(), fp32_path)
-    fp32_size = os.path.getsize(fp32_path)
 
     # 2. BF16
     m_bf16 = RotationModel(dim=256, hidden_dim=1024).to(device, dtype=torch.bfloat16)
@@ -160,7 +147,7 @@ def main():
     torch.save(m_bf16.state_dict(), bf16_path)
 
     # 3. Naive vs GPTQ Models
-    print("Applying Naive and GPTQ quantization...")
+    print("Applying Naive RTN and Sequential Damped GPTQ quantization...")
     m_naive_fp8 = apply_quantization_to_model(model_fp32, x_calib, format_type="fp8", use_gptq=False)
     m_gptq_fp8 = apply_quantization_to_model(model_fp32, x_calib, format_type="fp8", use_gptq=True)
     m_naive_fp4 = apply_quantization_to_model(model_fp32, x_calib, format_type="fp4", use_gptq=False)
@@ -188,7 +175,7 @@ def main():
     ]
 
     print("\n" + "=" * 125)
-    print("QUANTIZATION METHOD COMPARISON: NAIVE ROUNDING VS. GPTQ HESSIAN NUDGING")
+    print("QUANTIZATION METHOD COMPARISON: NAIVE ROUNDING VS. SEQUENTIAL DAMPED GPTQ")
     print("=" * 125)
     print(f"{'Precision Variant':<22} | {'Eff. Size':<10} | {'Worst Cos Sim':<15} | {'Ref Mag':<10} | {'Var Mag':<10} | {'Mean Cos':<10}")
     print("-" * 125)
