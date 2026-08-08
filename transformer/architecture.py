@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
+from blks.torch.nn import RMSNorm
 from blks.torch.optim import AdamW, Muon
 
 
@@ -12,23 +13,6 @@ def create_param(shape, dtype, device):
     param = nn.Parameter(torch.empty(shape, device=device, dtype=dtype))
     param = nn.ParameterDict({'weight': param})
     return param
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, **config):
-        super().__init__()
-        hidden_size = config['hidden_size']
-        rms_norm_eps = config['rms_norm_eps']
-        dtype = config['dtype']
-        device = config['device']
-        self.rms_norm_eps = rms_norm_eps
-        shape = (hidden_size,)
-        self.weight = create_param(shape, dtype, device)
-
-    def forward(self, x):
-        var = x.pow(2).mean(-1, True)
-        out = (x * torch.rsqrt(var + self.rms_norm_eps)) * self.weight.weight
-        return out
 
 
 class Attention(nn.Module):
@@ -135,9 +119,13 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, **config):
         super().__init__()
-        self.input_layernorm = RMSNorm(**config)
+        hidden_size = config['hidden_size']
+        rms_norm_eps = config['rms_norm_eps']
+        dtype = config['dtype']
+        device = config['device']
+        self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps, device=device, dtype=dtype)
         self.self_attn = Attention(**config)
-        self.post_attention_layernorm = RMSNorm(**config)
+        self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps, device=device, dtype=dtype)
         self.mlp = MLP(**config)
 
     def forward(self, x):
@@ -154,6 +142,7 @@ class Model(nn.Module):
         hidden_size = config['hidden_size']
         num_hidden_layers = config['num_hidden_layers']
         tie_word_embeddings = config['tie_word_embeddings']
+        rms_norm_eps = config['rms_norm_eps']
         dtype = config['dtype']
         device = config['device']
 
@@ -161,7 +150,7 @@ class Model(nn.Module):
 
         self.model = nn.ModuleDict({
             'embed_tokens': create_param(embed_shape, dtype, device),
-            'norm': RMSNorm(**config),
+            'norm': RMSNorm(hidden_size, eps=rms_norm_eps, device=device, dtype=dtype),
             'layers': nn.ModuleList(Block(**config) for layer_idx in range(num_hidden_layers))
         })
         if tie_word_embeddings:

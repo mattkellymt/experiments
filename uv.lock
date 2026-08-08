@@ -247,14 +247,13 @@ css = [
 [[package]]
 name = "blks"
 version = "2026.8.25"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../blks" }
 dependencies = [
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0f/81/d09162db03ccc00f8274a88502ab30845098afac48c44eafa9a7ce5644b2/blks-2026.8.25.tar.gz", hash = "sha256:4035fc8b5500754c2a8b8f2ef325e9ebf980703b3db28dacbb1409759fba1bca", size = 3361, upload-time = "2026-08-08T06:02:19.067Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a7/1e/0e759c6d3e639e946eb6bcc30c0d979970112d892af3af6d81bfdcce299b/blks-2026.8.25-py3-none-any.whl", hash = "sha256:153d1cca101861a21b8428c8957036988f00c27ae275a5e365b4dfc69ec27bf8", size = 5566, upload-time = "2026-08-08T06:02:18.042Z" },
-]
+
+[package.metadata]
+requires-dist = [{ name = "torch", specifier = ">=2.13.0" }]
 
 [[package]]
 name = "blobfile"
@@ -601,7 +600,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "blks", specifier = ">=2026.8.23" },
+    { name = "blks", editable = "../blks" },
     { name = "huggingface", specifier = ">=0.0.1" },
     { name = "jupyterlab", specifier = ">=4.6.2" },
     { name = "matplotlib", specifier = ">=3.11.1" },
