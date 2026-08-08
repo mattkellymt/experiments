@@ -1,3 +1,3 @@
-from blks.torch.optim import Adam, Muon
+from blks.torch.optim import AdamW, Muon
 
-__all__ = ["Adam", "Muon"]
+__all__ = ["AdamW", "Muon"]
