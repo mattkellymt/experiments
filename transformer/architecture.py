@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors, save_file as save_safetensors
-from blks.torch.optim import Muon
+from blks.torch.optim import AdamW, Muon
 
 
 def create_param(shape, dtype, device):
@@ -220,13 +220,15 @@ def load_model(model, path, device):
     model.load_state_dict(new_sd, strict_flag)
 
 
-def train_step(model, optimizer, inputs, targets):
-    optimizer.zero_grad()
+def train_step(model, optimizers, inputs, targets):
+    for optimizer in optimizers:
+        optimizer.zero_grad()
     logits = model(inputs)
     vocab_size = logits.shape[-1]
     loss = F.cross_entropy(logits.view(-1, vocab_size), targets.view(-1))
     loss.backward()
-    optimizer.step()
+    for optimizer in optimizers:
+        optimizer.step()
     loss_val = loss.item()
     return loss_val
 
@@ -298,19 +300,28 @@ def main():
     model = Model(**config)
     load_model(model, weights_path, device)
 
+    # Muon updates 2D hidden weights; AdamW handles everything else
+    # (biases, norms, embeddings, head) -- the reference two-optimizer recipe.
+    muon_params = [p for p in model.parameters() if p.ndim == 2]
+    adamw_params = [p for p in model.parameters() if p.ndim != 2]
+
     muon = Muon(
-        model.parameters(),
-        config['lr'],
-        config['weight_decay'],
-        config['momentum'],
-        nesterov_val,
-        eps_val,
-        ns_steps_val,
-        config['lr'],
-        betas_val,
-        adam_eps_val,
-        config['weight_decay'],
+        muon_params,
+        lr=config['lr'],
+        weight_decay=config['weight_decay'],
+        momentum=config['momentum'],
+        nesterov=nesterov_val,
+        eps=eps_val,
+        ns_steps=ns_steps_val,
     )
+    adamw = AdamW(
+        adamw_params,
+        lr=config['lr'],
+        betas=betas_val,
+        eps=adam_eps_val,
+        weight_decay=config['weight_decay'],
+    )
+    optimizers = [muon, adamw]
     tokenizer = AutoTokenizer.from_pretrained(repo_id)
 
     prompt = "Explain how a transformer model uses multi-head self-attention to process text."
