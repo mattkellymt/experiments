@@ -246,7 +246,7 @@ css = [
 
 [[package]]
 name = "blks"
-version = "2026.8.25"
+version = "2026.8.26"
 source = { editable = "../blks" }
 dependencies = [
     { name = "torch" },
