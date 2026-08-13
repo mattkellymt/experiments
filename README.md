@@ -5,6 +5,7 @@ Machine learning research implementations, architectural explorations, and neura
 ## Experiments Overview
 
 - **`covers_theorem/`**: Cover's Theorem on pattern separability.
+- **`decay/`**: Deep dense neural network (32->32, depth=5) non-linear function learning & decay dynamics.
 - **`density_estimation/`**: Density estimation techniques and probability models.
 - **`eos/`**: PyTorch Edge of Stability (EoS) experiments with custom models and optimizers.
 - **`gan/`**: Generative Adversarial Network (GAN) architecture and training scripts.
