@@ -1,0 +1,3 @@
+γ=5.0e-05: Final Val Loss = 3.1004
+γ=1.0e-04: Final Val Loss = 3.1385
+γ=5.0e-04: Final Val Loss = 3.1207
